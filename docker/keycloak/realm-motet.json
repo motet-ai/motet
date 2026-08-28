@@ -1,0 +1,402 @@
+{
+  "realm": "motet",
+  "displayName": "Motet",
+  "enabled": true,
+  "sslRequired": "NONE",
+  "registrationAllowed": false,
+  "rememberMe": true,
+  "resetPasswordAllowed": true,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "internationalizationEnabled": false,
+  "organizationsEnabled": true,
+  "registrationEmailAsUsername": true,
+  "defaultRoles": [
+    "offline_access",
+    "uma_authorization",
+    "default-roles-motet"
+  ],
+  "defaultDefaultClientScopes": [
+    "orgs",
+    "org_hierarchy",
+    "organization",
+    "profile",
+    "roles",
+    "email",
+    "web-origins"
+  ],
+  "defaultOptionalClientScopes": [
+    "address",
+    "phone",
+    "offline_access"
+  ],
+  "groups": [
+    {
+      "name": "orgs",
+      "path": "/orgs",
+      "subGroups": [
+        {
+          "name": "acme",
+          "attributes": {
+            "tenantSlug": [
+              "acme"
+            ]
+          },
+          "path": "/orgs/acme",
+          "subGroups": [
+            {
+              "name": "prod",
+              "attributes": {
+                "tenantSlug": [
+                  "acme-prod"
+                ]
+              },
+              "path": "/orgs/acme/prod"
+            },
+            {
+              "name": "dev",
+              "attributes": {
+                "tenantSlug": [
+                  "acme-dev"
+                ]
+              },
+              "path": "/orgs/acme/dev"
+            }
+          ]
+        },
+        {
+          "name": "globex",
+          "attributes": {
+            "tenantSlug": [
+              "globex"
+            ]
+          },
+          "path": "/orgs/globex",
+          "subGroups": [
+            {
+              "name": "prod",
+              "attributes": {
+                "tenantSlug": [
+                  "globex-prod"
+                ]
+              },
+              "path": "/orgs/globex/prod"
+            },
+            {
+              "name": "sandbox",
+              "attributes": {
+                "tenantSlug": [
+                  "globex-sandbox"
+                ]
+              },
+              "path": "/orgs/globex/sandbox"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "motet-global",
+      "attributes": {
+        "tenantSlug": [
+          "motet-global"
+        ],
+        "tenantScope": [
+          "global"
+        ]
+      },
+      "path": "/motet-global"
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "motet-admin",
+        "description": "Global Motet administrator (cross-tenant access)",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "motet"
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "motet-admin",
+      "email": "root@motet.localhost",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Motet",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "RootPassword1!",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/motet-global"
+      ],
+      "realmRoles": [
+        "motet-admin"
+      ]
+    },
+    {
+      "username": "acme-user",
+      "email": "demo@acme.localhost",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Acme",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "AcmeUser1!",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/orgs/acme/prod"
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "organization",
+      "description": "Primary organization metadata (id/slug/attributes)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "organization",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-organization-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "organization",
+            "jsonType.label": "JSON",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true",
+            "addOrganizationAttributes": "true",
+            "addOrganizationId": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "orgs",
+      "description": "Top-level organization memberships (/orgs/<tenant>)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "orgs",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "true",
+            "token.claim.name": "orgs",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true",
+            "usermodel.realmRoleMapping": "false",
+            "usermodel.clientRoleMapping": "false",
+            "groups.path.regex": "^/orgs/[^/]+$"
+          }
+        }
+      ]
+    },
+    {
+      "name": "org_hierarchy",
+      "description": "Full organization hierarchy paths (/orgs/<tenant>/<scope>)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "org_hierarchy_mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-script-mapper",
+          "consentRequired": false,
+          "config": {
+            "script": "var LinkedHashSet = Java.type(\"java.util.LinkedHashSet\");\nvar paths = new LinkedHashSet();\nuser.getGroupsStream().forEach(function(group) {\n  var path = group.getPath();\n  if (path != null && path.startsWith(\"/orgs/\")) {\n    var segments = path.split(\"/\");\n    var acc = \"\";\n    for (var i = 1; i < segments.length; i++) {\n      if (!segments[i]) {\n        continue;\n      }\n      acc = acc + \"/\" + segments[i];\n      paths.add(acc);\n    }\n  }\n});\nexports = Java.from(paths.toArray());",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true",
+            "claim.name": "org_hierarchy",
+            "jsonType.label": "String",
+            "multivalued": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "profile",
+      "description": "OpenID Connect built-in scope: profile",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "${profileScopeConsentText}"
+      },
+      "protocolMappers": [
+        {
+          "name": "full name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-full-name-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "given name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "firstName",
+            "claim.name": "given_name",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "family name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "lastName",
+            "claim.name": "family_name",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "preferred username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "email",
+      "description": "OpenID Connect built-in scope: email",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "${emailScopeConsentText}"
+      },
+      "protocolMappers": [
+        {
+          "name": "email",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "email",
+            "claim.name": "email",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "email verified",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "emailVerified",
+            "claim.name": "email_verified",
+            "jsonType.label": "boolean",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "motet-ai-stack",
+      "name": "Motet Demo Application",
+      "description": "Local Motet demo / CLI",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false,
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+",
+        "oauth2.device.authorization.grant.enabled": "false"
+      },
+      "redirectUris": [
+        "http://localhost:8000/*",
+        "http://127.0.0.1:8000/*"
+      ],
+      "webOrigins": [
+        "+"
+      ],
+      "defaultClientScopes": [
+        "orgs",
+        "org_hierarchy",
+        "organization",
+        "profile",
+        "roles",
+        "email",
+        "web-origins"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access"
+      ]
+    }
+  ]
+}
+

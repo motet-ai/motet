@@ -1,0 +1,8 @@
+format_version: "1"
+name: "calculator"
+version: "1.0.0"
+description: "Calculator bundle — tests commands, tools, and a multi-step workflow."
+load_order:
+  - commands
+  - tools
+  - workflows

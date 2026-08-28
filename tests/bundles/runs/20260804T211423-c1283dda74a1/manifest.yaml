@@ -1,0 +1,4 @@
+format_version: "1"
+name: "basic-skill-example"
+version: "0.1.0"
+description: "Minimal bundle with one skill and one script for end-to-end skill deployment testing."

@@ -1,0 +1,114 @@
+# research — multi-step deep research workflow.
+#
+# Demonstrates a 4-step pipeline:
+#   1. LLM-powered query planning (motet.models.infer)
+#   2. Parallel web search fan-out (motet.apply)
+#   3. Parallel page fetch + LLM extraction (motet.apply + motet.models.infer)
+#   4. LLM synthesis + memory persistence (motet.models.infer + motet.memory)
+
+workflow_id: research
+name: Deep Research
+output_field: report
+description: >
+  Conduct deep research on a topic by generating targeted search queries with
+  an LLM, fetching and analyzing sources in parallel, then synthesizing a
+  comprehensive report stored in memory.  Use for requests like "research X",
+  "deep dive on Y", or "investigate Z".
+
+  RESULT: When this workflow completes, the synthesize step produces a
+  report field containing a fully formatted markdown research report.
+  Present report directly to the user.  Do NOT call web_search afterward —
+  the report is self-contained and complete.  When store_in_memory is true,
+  also surface memory_store_status / memory_id from synthesize so the user
+  knows whether the report was persisted for deep-research.recall_research.
+
+input_parameters:
+  topic:
+    type: string
+    description: Research topic to investigate (e.g., "quantum computing breakthroughs 2026").
+    required: true
+  num_queries:
+    type: integer
+    description: Number of search queries to generate from the topic.
+    default: 5
+  max_results_per_query:
+    type: integer
+    description: Maximum web search results per query.
+    default: 5
+  max_pages:
+    type: integer
+    description: Maximum pages to fetch and analyze.
+    default: 8
+  max_chars:
+    type: integer
+    description: Maximum content characters per page sent to the LLM.
+    default: 4000
+  fetch_timeout:
+    type: number
+    description: Per-page browser fetch timeout in seconds.
+    default: 30
+  provider:
+    type: string
+    description: LLM provider for planning, extraction, and synthesis.
+    default: "openai"
+  model_name:
+    type: string
+    description: LLM model name for planning, extraction, and synthesis.
+    default: "gpt-4o-mini"
+  store_in_memory:
+    type: boolean
+    description: Whether to persist the final report in memory for later recall.
+    default: true
+
+steps:
+  plan_queries:
+    step_id: plan_queries
+    command_type: deep-research.plan_queries
+    description: "Decompose the topic into targeted search queries using an LLM."
+    parameters:
+      topic: "{{topic}}"
+      num_queries: "{{num_queries}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies: []
+
+  gather_sources:
+    step_id: gather_sources
+    command_type: deep-research.gather_sources
+    description: "Fan out web searches in parallel and deduplicate results."
+    parameters:
+      topic: "{{topic}}"
+      queries: "{{plan_queries.queries}}"
+      max_results_per_query: "{{max_results_per_query}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies:
+      - plan_queries
+
+  analyze_sources:
+    step_id: analyze_sources
+    command_type: deep-research.analyze_sources
+    description: "Fetch pages and extract findings in parallel using the browser and LLM."
+    parameters:
+      topic: "{{topic}}"
+      sources: "{{gather_sources.sources}}"
+      max_pages: "{{max_pages}}"
+      max_chars: "{{max_chars}}"
+      fetch_timeout: "{{fetch_timeout}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies:
+      - gather_sources
+
+  synthesize:
+    step_id: synthesize
+    command_type: deep-research.synthesize
+    description: "Synthesize all findings into a research report and store in memory."
+    parameters:
+      topic: "{{topic}}"
+      analyzed: "{{analyze_sources.analyzed}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+      store_in_memory: "{{store_in_memory}}"
+    dependencies:
+      - analyze_sources

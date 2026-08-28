@@ -1,0 +1,138 @@
+/**
+ * Motet - Motet UI Common
+ *
+ * Copyright (c) 2024-2026 Motet Contributors
+ * Licensed under the Apache License, Version 2.0. See LICENSE.
+ *
+ * Author: Matt Chisholm <matt@motet.dev>
+ * Last Modified: 2026-08-26
+ *
+ * Description:
+ *     Shared UI components, hooks, types, and utilities for Motet applications.
+ *     This package provides common functionality used across chat-explorer,
+ *     ops-dashboard, and other Motet frontend applications.
+ *
+ * Usage:
+ *     import { useAuth, AuthModal, SignedOutPage, AuthState } from "@motet/ui-common";
+ */
+
+// Types
+export type { AuthState, SSEvent } from "./types";
+export { defaultAuthState } from "./types";
+export type {
+  ReasoningStepEvent,
+  WorkflowStepEvent,
+  AgentStreamSlice,
+  AgentReasoningPanel,
+} from "./types";
+export { DEFAULT_STREAM_AGENT_KEY } from "./types";
+export type { AttachmentState, DraftUploadItem, PresetIcons } from "./types";
+export { inferPresetIcon, inferFileCardProps } from "./types";
+export type { Overrides, ReasoningEffort } from "./types";
+export type { ArtifactRagScope, RagControlsValue } from "./types";
+export {
+  defaultRagControlsValue,
+  ragControlsIsCustom,
+  ragScopeShortLabel,
+  summarizeRagControls,
+} from "./types";
+
+// Hooks
+export { useAuth, buildHeaders, buildAuthHeaders } from "./hooks";
+export type { UseAuthOptions } from "./hooks";
+export { useEventBus } from "./hooks";
+export type { UseEventBusOptions } from "./hooks";
+export { useThrottle } from "./hooks";
+export { useAttachments } from "./hooks";
+export { useConversationManager, computeInitialConversations } from "./hooks";
+export { normalizeAgentId } from "./hooks";
+export type {
+  ConversationEntry,
+  ConversationStore,
+  ConversationListScope,
+  UseConversationManagerOptions,
+} from "./hooks";
+export { useRequestContext } from "./hooks";
+export type { UseRequestContextOptions } from "./hooks";
+
+// Components
+export {
+  AuthModal,
+  LoginRequiredModal,
+  SignedOutPage,
+  RequireRole,
+  hasAnyRole,
+  ADMIN_ROLES,
+  SIGNED_OUT_STORAGE_KEY,
+  markSignedOut,
+  clearSignedOutFlag,
+  wasSignedOut,
+  appLogoutRedirectUri,
+  finishRemoteLogout,
+} from "./components";
+export type {
+  AuthModalProps,
+  LoginRequiredModalProps,
+  SignedOutPageProps,
+  SignedOutVariant,
+  RequireRoleProps,
+} from "./components";
+export { MermaidBlock, renderMarkdownWithMermaid } from "./components";
+export { RenameModal } from "./components";
+export type { RenameModalProps } from "./components";
+export { RagControls } from "./components";
+export type { RagControlsProps, RagArtifactOption } from "./components";
+export { MediaRenderer } from "./components";
+export type { MediaRendererProps } from "./components";
+
+// Utils
+export { randomId, debugLog, parseSseBuffer } from "./utils";
+export {
+  shortAgentLabel,
+  resolveAgentDisplayName,
+  isSpawnAgentId,
+  spawnAgentOrdinal,
+  assistantTurnSlices,
+  assistantTranscriptTurnSlice,
+  groupTranscriptAssistantTurns,
+  resolvePrimaryAgentKey,
+  resolveTranscriptPrimaryAgentKey,
+} from "./utils";
+export type { AgentRegistryEntry, AssistantTurnSlice, TranscriptHistoryMessage } from "./utils";
+export { formatExecutionStatusLine } from "./utils";
+export { CORE_NAMESPACE, namespaceFromQualifiedName, qualifyWithCoreNamespace } from "./utils";
+export { isAlwaysOnThinkingModel, treatsThinkingAsAlwaysOn } from "./utils";
+
+// API clients
+export {
+  listConversations,
+  getConversation,
+  updateConversationTitle,
+  deleteConversation,
+  mapHistoryToMessages,
+} from "./api";
+export type {
+  ConversationItem,
+  ConversationListResponse,
+  ConversationHistoryAttachment,
+  ConversationHistoryItem,
+  ConversationDetailResponse,
+  ListConversationsParams,
+} from "./api";
+
+// Chat protocol (framework-agnostic SSE reducer)
+export {
+  reduceChatEvent,
+  streamAgentKeyFromData,
+  withAgentStream,
+  CONTINUE_AFTER_BUDGET_USER_MESSAGE,
+  BUDGET_STOP_REASONS,
+  isBudgetStopReason,
+} from "./api";
+export type {
+  ChatMessage,
+  ChatInput,
+  ChatOutput,
+  ReduceResult,
+  MediaPart,
+} from "./api";

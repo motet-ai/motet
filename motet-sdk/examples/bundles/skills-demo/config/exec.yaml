@@ -1,0 +1,5 @@
+# Bundle base image stack for catalog and lint.
+# Do not set requirements_path here — this example stays on python-minimal without
+# a deployer-side image build. Document-skill binaries (LibreOffice, poppler) need
+# an operator-pinned python-office stack; see README.
+base_image_stack: python-minimal

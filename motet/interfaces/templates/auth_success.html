@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authentication Success</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .container {
+            background: white;
+            padding: 3rem;
+            border-radius: 1rem;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            max-width: 500px;
+        }
+        .success-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        h1 {
+            color: #2d3748;
+            margin-top: 0;
+        }
+        p {
+            color: #4a5568;
+            margin: 1.5rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">✅</div>
+        <h1>Authentication Successful</h1>
+        <p>You have been successfully authenticated. Redirecting...</p>
+    </div>
+    <script>
+        // Store tokens in localStorage (for same-origin redirects)
+        localStorage.setItem('motet_jwt_token', '{{ jwt_token or "" }}');
+        if ('{{ access_token or "" }}') {
+            localStorage.setItem('motet_access_token', '{{ access_token or "" }}');
+        }
+        if ('{{ id_token or "" }}') {
+            localStorage.setItem('motet_id_token', '{{ id_token or "" }}');
+        }
+        
+        // If opened in popup, send token to parent window and close
+        if (window.opener && !window.opener.closed) {
+            try {
+                // Send token to parent window (same origin, so this works)
+                window.opener.postMessage({
+                    type: 'oauth_success',
+                    token: '{{ jwt_token or "" }}',
+                    access_token: '{{ access_token or "" }}',
+                    id_token: '{{ id_token or "" }}'
+                }, window.location.origin);
+                
+                // Close popup after brief delay
+                setTimeout(function() {
+                    window.close();
+                }, 500);
+            } catch (e) {
+                console.error('Failed to communicate with parent window:', e);
+                // Fallback: redirect popup to main page
+                window.location.href = '{{ redirect_uri }}';
+            }
+        } else {
+            // Not in popup - redirect normally
+            // When redirecting to CLI success page, pass token in fragment (not sent to server)
+            var redirectUri = '{{ redirect_uri }}';
+            var jwtToken = '{{ jwt_token or "" }}';
+            if (redirectUri.indexOf('cli-success') !== -1 && jwtToken) {
+                window.location.href = redirectUri + '#token=' + encodeURIComponent(jwtToken);
+            } else {
+                setTimeout(function() {
+                    window.location.href = redirectUri;
+                }, 1000);
+            }
+        }
+    </script>
+</body>
+</html>
+

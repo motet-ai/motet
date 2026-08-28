@@ -1,0 +1,50 @@
+motet-python-office Third-Party Notices
+=======================================
+
+This image is a curated base for document/PDF skill scripts. It contains no
+Motet source code. It aggregates unmodified packages from Debian (bookworm),
+PyPI, and npm; each component remains under its own license. Aggregation in
+this image does not change any component's license.
+
+Exact installed versions are recorded in this directory:
+
+- DEBIAN_PACKAGES.txt  (dpkg package, version, source package)
+- PYTHON_PACKAGES.txt  (pip freeze)
+- NPM_PACKAGES.json    (npm ls under /opt/motet/npm)
+
+Principal components and licenses
+---------------------------------
+
+| Component | License |
+|-----------|---------|
+| LibreOffice (writer, calc, impress, common) | MPL-2.0 |
+| Ghostscript | AGPL-3.0 |
+| Poppler (poppler-utils) | GPL-2.0 |
+| pandoc | GPL-2.0-or-later |
+| OpenJDK JRE (default-jre-headless) | GPL-2.0 with Classpath exception |
+| Node.js / npm | MIT (and component licenses) |
+| docx (npm, /opt/motet/npm) | MIT |
+| DejaVu fonts | Bitstream Vera license (free) |
+| Liberation fonts | SIL OFL 1.1 |
+| Python wheels (pypdf, python-docx, openpyxl, python-pptx, ...) | See PYTHON_PACKAGES.txt; permissive (BSD/MIT) |
+
+Corresponding source
+--------------------
+
+All Debian packages are installed unmodified from the Debian bookworm archive.
+Corresponding source code for every Debian package in this image, at the exact
+versions listed in DEBIAN_PACKAGES.txt, is available from Debian:
+
+- https://snapshot.debian.org/ (archived by package name and version)
+- `apt-get source <package>` against the Debian bookworm sources
+
+Python and npm packages are installed unmodified from PyPI and the npm
+registry at the versions listed in the manifests above; source is available
+from those registries and the project URLs in each package's metadata.
+
+Note on AGPL (Ghostscript)
+--------------------------
+
+Ghostscript is included as an unmodified standalone binary (`gs`) invoked as a
+separate process by skill scripts. Its AGPL-3.0 terms apply to Ghostscript
+itself; corresponding source is available as described above.

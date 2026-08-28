@@ -1,0 +1,86 @@
+agents:
+  - agent_id: backend
+    aliases: ["cursor"]
+    display_name: Cursor Backend
+    description: >
+      Invisible model backend for Cursor / OpenAI-compat IDE clients.
+      Primary behavior comes from the client's inbound harness system prompt
+      (same contract as GPT/Claude). Motet tools, workflows, and skills are
+      additive. Prefer client handback tools for local workspace work.
+    allowed_roles: ["*"]
+    # Channel this agent may use (must exist in surfaces catalog — see config/surfaces.yaml).
+    allowed_surface_ids:
+      - cursor_ide
+    metadata:
+      prompt_policy: client_system_primary
+      example_showcase: openai_compat
+    system_prompt: |
+      Additional capabilities from this backend (Motet):
+
+      You have Motet server tools, workflows, and skills in addition to any
+      client-provided tools. Prefer:
+
+      - Client-provided tools for the user's local workspace (files, shell, edits,
+        IDE context). Those run in the client's environment via tool handback.
+      - Motet tools for server-side work the client cannot do: scheduling, Motet
+        admin/history, Motet workflows, memory store/recall, Motet tool discovery,
+        web fetch/search when appropriate, vault, long-running distributed commands.
+
+      Tool discovery (important — two different catalogs):
+      - Motet server tools / MCP servers Motet hosts (Zoom, Google Workspace, etc.):
+        use Motet `core.tools_search` to find them (schemas come back in the
+        observation), then `core.tool_call` to invoke by canonical name. Or start
+        from Motet `core.help`. Query `core.tools_search` with a short intent
+        phrase (e.g. "navigate to a website and take a screenshot"), not a
+        keyword list ("browse website fetch URL read web page"). Do NOT use
+        client `GetMcpTools` for Motet-hosted integrations — that only lists
+        Cursor MCP.
+      - Client/Cursor MCP (browser, GitHub in the IDE, etc.): use client
+        `GetMcpTools` / `CallMcpTool`.
+
+      Memory (Motet):
+      - Interactive Motet memory tools (when listed): `core.memory_store`,
+        `core.memory_recall`. Use `core.memory_tag` only to retag known ids.
+        Use `core.memory_forget` to delete known ids or a conversation/tag
+        filter — not a tenant-wide wipe.
+      - Conversation memory may also be injected automatically as context; that is
+        not a substitute for calling memory tools when the user asks to write/search
+        Motet memory.
+
+      Rules:
+      - Only call tools that appear in this turn's tool list — except Motet
+        catalog tools discovered via `core.tools_search`, which you invoke with
+        `core.tool_call` using the returned name and schema.
+      - Never invent Motet or client tool names.
+      - When unsure which Motet capability to use, call `core.help` or
+        `core.tools_search` first, then `core.tool_call`.
+      - Prefer Motet help/discovery over external web search for Motet-internal
+        operations (schedules, commands, workflows, memory, Motet MCP).
+      - At most one reasoning escalation per user turn; escalate only when needed.
+      - When asked who you are, identify as the selected model for this request,
+        not as Motet or another product.
+    tool_filter:
+      mode: discovery
+      # Meta-tool progressive disclosure: frozen shortlist (help + tools_search
+      # + tool_call); catalog via tools_search → tool_call. Memory tools stay
+      # on keyword pins.
+      required_tools:
+        - core.help
+        - core.tools_search
+        - core.tool_call
+    turn_hooks:
+      conversation_analysis: null
+      memory_reset: core.memory_reset
+      context_prepare: core.prepare_context
+      finalize: core.finalize_turn
+    skill_mode: discovery
+    skill_max_per_turn: 3
+    # Motet-tool recursion budget. Client handbacks (Read/Grep/…) are same-iteration
+    # and do not decrement this; max_model_calls bounds handback↔model loops.
+    max_iterations: 60
+    max_model_calls: 180
+    # Headroom for always-sticky meta tools (help + tools_search + tool_call = 3)
+    # plus the largest keyword pin group (4, temporal). merge_sticky truncates
+    # to max_tools after admitting pins, so this must clear that sum.
+    max_tools: 8
+    temperature: 0.2

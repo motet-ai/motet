@@ -1,0 +1,38 @@
+{
+  "name": "@motet/ui-common",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api": "./src/api/index.ts",
+    "./hooks": "./src/hooks/index.ts",
+    "./components": "./src/components/index.ts",
+    "./types": "./src/types/index.ts",
+    "./utils": "./src/utils/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint --ext .ts,.tsx src",
+    "typecheck": "tsc --noEmit",
+    "test": "npx --yes tsx --test src/hooks/conversationAuth.test.ts src/utils/assistantTurn.test.ts src/components/auth/signedOutSession.test.ts"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "antd": "^6.0.0",
+    "@ant-design/x": "^2.0.0",
+    "@ant-design/x-markdown": "^2.0.0"
+  },
+  "devDependencies": {
+    "@ant-design/x": "^2.0.0",
+    "@ant-design/x-markdown": "^2.0.0",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "antd": "^6.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "typescript": "^5.6.3"
+  }
+}

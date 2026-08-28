@@ -1,0 +1,15 @@
+agents:
+  - agent_id: "support"
+    aliases: ["support", "helpdesk"]
+    display_name: "Support Agent"
+    description: "Example support-oriented bundle agent."
+    allowed_roles: ["*"]
+    system_prompt: "You are a support specialist. Be concise and solution-oriented."
+    tool_filter:
+      mode: "discovery"
+    turn_hooks:
+      conversation_analysis: "core.conversation_analysis"
+      memory_reset: "core.memory_reset"
+      context_prepare: "core.prepare_context"
+      finalize: "core.finalize_turn"
+

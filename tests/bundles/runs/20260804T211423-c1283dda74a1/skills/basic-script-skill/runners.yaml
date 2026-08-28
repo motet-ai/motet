@@ -1,0 +1,28 @@
+# ADR-0101 Slice B: declarative runner manifest for basic-script-skill.
+#
+# Each entry under `runners` becomes a tool the model can call directly,
+# named `{bundle}.{skill}.{runner}` -- in this case
+# `basic-skill-example.basic-script-skill.echo`.
+#
+# `lifetime: ephemeral` is the safe default: each call is a hermetic
+# per-call execution under MOTET_EXEC_BACKEND. Authors can opt into
+# `lifetime: workspace` to get per-conversation /scratch persistence
+# described in ADR-0106.
+
+runners:
+  - name: echo
+    description: |
+      Run echo_payload.py with a text argument and return a JSON envelope.
+      Useful for verifying that bundle deployment, skill loading, and
+      worker_exec wiring all work end-to-end.
+    script: scripts/echo_payload.py
+    interpreter: python3
+    image_stack: python-minimal
+    lifetime: ephemeral
+    timeout_seconds: 30
+    network: inherit
+    args:
+      text:
+        type: string
+        description: Message text to round-trip through the script.
+        default: "hello"

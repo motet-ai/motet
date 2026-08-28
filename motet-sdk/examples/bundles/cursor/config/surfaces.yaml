@@ -1,0 +1,6 @@
+# Conversation surfaces introduced by this bundle (global ids).
+# Deploy registers missing ids; existing ids are left unchanged.
+surfaces:
+  - id: cursor_ide
+    display_name: Cursor IDE
+    description: Cursor / OpenAI-compat IDE client traffic for cursor.backend

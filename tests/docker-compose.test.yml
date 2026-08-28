@@ -1,0 +1,377 @@
+name: motet_test
+
+services:
+  # Core services for integration tests
+  # NOTE: Isolated from docker-compose.distributed.yml to enable simultaneous operation
+  # - Different project name: motet_test (vs motet_dev) - prevents service conflicts
+  # - Different network: motet_test (vs motet_dev)
+  # - Container names: compose project prefix only (no container_name:) so
+  #   concurrent project instances / app-builder test gates do not collide (#126)
+  # - Different external ports: Redis=6479, Postgres=5532, Keycloak=8180
+  # - Same internal ports: Services use standard ports within their isolated network
+  # - Workers are optional: Use --profile workers to enable celery workers for distributed testing
+  # NOTE: This file is in tests/ directory, so paths are relative to project root (..)
+  
+  redis:
+    image: ${MOTET_VALKEY_IMAGE:-valkey/valkey-bundle:9.1.2}
+    ports:
+      - "6479:6379"  # External:Internal - Mapped to 6479 to avoid conflict with distributed Valkey
+    command: valkey-server --appendonly yes
+    networks:
+      - motet_test
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: motet_test
+      POSTGRES_USER: motet
+      POSTGRES_PASSWORD: motet_test_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5532:5432"  # External:Internal - Mapped to 5532 to avoid conflict with distributed Postgres
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ../sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - motet_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U motet -d motet_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Keycloak for OAuth/JWT testing (mirrors dev stack)
+  keycloak:
+    build:
+      context: ../docker/keycloak
+    command:
+      - start-dev
+      - --import-realm
+      - --features=preview,organization,scripts
+      - --http-enabled=true
+      - --hostname-strict=false
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_FEATURES: preview,organization,scripts
+      KC_HOSTNAME: localhost
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_HEALTH_ENABLED: "false"
+      JAVA_OPTS_APPEND: "-XX:TieredStopAtLevel=1"
+    ports:
+      - "8180:8080"  # External:Internal - Mapped to 8180 to avoid conflict with distributed Keycloak
+    volumes:
+      - keycloak_test_data:/opt/keycloak/data
+      - ../docker/keycloak/realm-motet.json:/opt/keycloak/data/import/realm-motet.json:ro
+    networks:
+      - motet_test
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf "GET /health/ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3 &&
+          IFS= read -r line <&3 && [[ "$$line" == *"200"* ]]'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+    restart: unless-stopped
+
+  keycloak-bootstrap:
+    build:
+      context: ..
+      dockerfile: docker/keycloak/bootstrap.Dockerfile
+      args:
+        KEYCLOAK_VERSION: "26.4.0"
+    command: >
+      --server http://keycloak:8080
+      --realm motet
+      --admin-realm master
+      --user ${KEYCLOAK_ADMIN:-admin}
+      --password ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      --no-compose
+      --kcadm-path /opt/keycloak/bin/kcadm.sh
+      --skip-scope-setup
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+    networks:
+      - motet_test
+    restart: "no"
+
+  # ADR-0107: optional embedding server for worker-profile tests.
+  #
+  # The worker image no longer carries SentenceTransformer. When distributed
+  # worker tests are enabled, workers use this sibling service for embeddings.
+  embedding-server:
+    build:
+      context: ..
+      dockerfile: docker/images/embedding-server/Dockerfile
+    command: >
+      bash -c "
+        echo 'Starting test embedding server (ADR-0107)...';
+        exec python -m motet.core.embedding.server --host 0.0.0.0 --port 8091
+      "
+    environment:
+      MOTET_EMBEDDING_TEXT_MODEL: "sentence-transformers/all-MiniLM-L12-v2"
+      HF_HOME: "/opt/imf_hf_cache"
+      TRANSFORMERS_CACHE: "/opt/imf_hf_cache/transformers"
+      SENTENCE_TRANSFORMERS_HOME: "/opt/imf_hf_cache/sentence_transformers"
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - ..:/app
+    networks:
+      - motet_test
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8091/healthz', timeout=5).read()\""]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+    profiles: ["workers"]
+
+  # Test runner service
+  test-runner:
+    build:
+      context: ..
+      dockerfile: docker/images/test-runner/Dockerfile
+    networks:
+      - motet_test
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      # Make motet_sdk importable (motet CLI re-exports from motet_sdk; volume mounts project root at /app)
+      PYTHONPATH: "/app:/app/motet-sdk/src"
+      # Test configuration
+      MOTET_TEST_MODE: "true"
+      MOTET_LOG_LEVEL: "INFO"
+      MOTET_API_KEY: "test-key"
+      
+      # Database configuration
+      MOTET_PGVECTOR_DSN: "postgresql://motet:motet_test_password@postgres:5432/motet_test"
+      MOTET_POSTGRES_URL: "postgresql://motet:motet_test_password@postgres:5432/motet_test"
+      
+      # Redis configuration (invoker same DB as readiness so E2E deploy test sees deployer-worker)
+      MOTET_REDIS_URL: "redis://redis:6379/1"
+      MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL: "redis://redis:6379/1"
+      # Wheels are in the test-runner image. Live GLIDE tests opt in themselves;
+      # do not flip the whole suite (Celery broker stays redis-py).
+
+      # Shared with the worker services on purpose: ADR-0056 envelope encryption
+      # derives tenant keys from this value, so a worker writing command stream
+      # frames and the runner reading them must agree or decryption fails.
+      MOTET_VAULT_MASTER_KEY: "test-shared-master-key-change-in-production"
+      
+      # Distributed system configuration
+      MOTET_STATE_REGISTRY_ENABLED: "true"
+      
+      # OAuth/JWT configuration for Auth tests
+      MOTET_JWT_JWKS_URL: "http://keycloak:8080/realms/motet/protocol/openid-connect/certs"
+      MOTET_JWT_ISSUER: "http://keycloak:8080/realms/motet"
+      MOTET_KEYCLOAK_CLIENT_ID: "motet-ai-stack"
+      MOTET_KEYCLOAK_CLIENT_SECRET: "test-secret"
+      MOTET_KEYCLOAK_REALM: "motet"
+      MOTET_KEYCLOAK_BASE_URL: "http://keycloak:8080"
+      
+      # Test-specific settings
+      MOTET_MODEL_PROVIDER: "mock"
+      MOTET_MODEL_NAME: "mock-small"
+      # The runner is a pytest driver, not the worker image. Vector behavior is
+      # validated by worker-profile services wired to embedding-server.
+      MOTET_ENABLE_VECTOR_MEMORY: "false"
+      MOTET_RATE_LIMIT_PER_MINUTE: "0"
+      MOTET_ALLOW_INSECURE_PRINCIPAL_HEADERS: "false"
+      MOTET_WORKER_EXEC_CWD_ALLOWLIST: "/var/motet/worker-exec"
+      
+      # External services flag
+      EXTERNAL_SERVICES_AVAILABLE: "true"
+      
+      # Test timeouts
+      TEST_TIMEOUT: "300"
+      INTEGRATION_TEST_TIMEOUT: "600"
+      PERFORMANCE_TEST_TIMEOUT: "1200"
+    volumes:
+      - ..:/app
+      - test_logs:/app/logs
+      - test_traces:/app/traces
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      keycloak-bootstrap:
+        condition: service_completed_successfully
+    working_dir: /app
+    command: ["python", "-m", "pytest", "tests/", "-v", "--tb=short", "-m", "not distributed"]
+
+  # Worker 1 - Mirrors distributed setup for realistic testing
+  # NOTE: Workers are optional - use --profile workers to enable them
+  # For basic API tests, workers are not needed (test-runner calls services directly)
+  # The worker.cloud_<worker_id> queue is required: the router dispatches every
+  # command to that per-worker queue, so omitting it silently strands commands.
+  worker-1:
+    build:
+      context: ..
+      dockerfile: docker/images/worker/Dockerfile
+    environment:
+      MOTET_REDIS_URL: "redis://redis:6379/1"
+      MOTET_POSTGRES_URL: "postgresql://motet:motet_test_password@postgres:5432/motet_test"
+      MOTET_LOG_LEVEL: "INFO"
+      MOTET_WORKER_ID: "test-worker-1"
+      MOTET_MODEL_PROVIDER: "mock"
+      MOTET_MODEL_NAME: "mock-small"
+      MOTET_ENABLE_MEMORY: "true"
+      MOTET_MEMORY_BACKEND: "redis"
+      MOTET_ENABLE_VECTOR_MEMORY: "true"
+      MOTET_STORE_ASSISTANT_VECTOR: "true"
+      MOTET_MEMORY_AGENT_SCOPE_MODE: "prefer"
+      MOTET_EMBEDDING_TOPOLOGY: "sibling"
+      MOTET_EMBEDDING_ENDPOINT: "http://embedding-server:8091"
+      MOTET_EMBEDDING_REQUEST_TIMEOUT_SECONDS: "10"
+      MOTET_EMBEDDING_REQUEST_MAX_ATTEMPTS: "3"
+      MOTET_EMBEDDING_RETRY_BACKOFF_SECONDS: "0.25"
+      MOTET_EMBEDDING_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "3"
+      MOTET_EMBEDDING_CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECONDS: "30"
+      MOTET_STORE_TOOL_OBSERVATIONS: "true"
+      MOTET_TOOL_OBSERVATION_MAX_BYTES: "2048"
+      CELERY_BROKER_URL: "redis://redis:6379/1"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      # Must match test-runner: the invoker coordinates dispatch through this DB,
+      # so a worker on a different one never receives the runner's commands
+      # (the distributed dev stack likewise shares one invoker DB).
+      MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL: "redis://redis:6379/1"
+      # Must match test-runner: shared tenant key derivation (ADR-0056)
+      MOTET_VAULT_MASTER_KEY: "test-shared-master-key-change-in-production"
+      MOTET_WORKER_EXEC_CWD_ALLOWLIST: "/var/motet/worker-exec"
+    volumes:
+      - ..:/app
+    networks:
+      - motet_test
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      embedding-server:
+        condition: service_healthy
+    working_dir: /app
+    # Single line on purpose: in a YAML folded scalar the more-indented
+    # continuation lines keep their newlines, which would end the celery
+    # invocation after "worker" and silently drop every flag after it.
+    command: bash -c "exec celery -A motet.core.workers.tasks worker --loglevel=info --pool=gevent --concurrency=10 --hostname=test-worker1@%h --queues=default,worker_management,event_delivery,command_processing,worker.cloud_test-worker-1"
+    profiles: ["workers"]
+
+  # Worker 2 - Mirrors distributed setup for realistic testing
+  # NOTE: Workers are optional - use --profile workers to enable them
+  worker-2:
+    build:
+      context: ..
+      dockerfile: docker/images/worker/Dockerfile
+    environment:
+      MOTET_REDIS_URL: "redis://redis:6379/1"
+      MOTET_POSTGRES_URL: "postgresql://motet:motet_test_password@postgres:5432/motet_test"
+      MOTET_LOG_LEVEL: "INFO"
+      MOTET_WORKER_ID: "test-worker-2"
+      MOTET_MODEL_PROVIDER: "mock"
+      MOTET_MODEL_NAME: "mock-small"
+      MOTET_ENABLE_MEMORY: "true"
+      MOTET_MEMORY_BACKEND: "redis"
+      MOTET_ENABLE_VECTOR_MEMORY: "true"
+      MOTET_STORE_ASSISTANT_VECTOR: "true"
+      MOTET_MEMORY_AGENT_SCOPE_MODE: "prefer"
+      MOTET_EMBEDDING_TOPOLOGY: "sibling"
+      MOTET_EMBEDDING_ENDPOINT: "http://embedding-server:8091"
+      MOTET_EMBEDDING_REQUEST_TIMEOUT_SECONDS: "10"
+      MOTET_EMBEDDING_REQUEST_MAX_ATTEMPTS: "3"
+      MOTET_EMBEDDING_RETRY_BACKOFF_SECONDS: "0.25"
+      MOTET_EMBEDDING_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "3"
+      MOTET_EMBEDDING_CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECONDS: "30"
+      MOTET_STORE_TOOL_OBSERVATIONS: "true"
+      MOTET_TOOL_OBSERVATION_MAX_BYTES: "2048"
+      CELERY_BROKER_URL: "redis://redis:6379/1"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      # Must match test-runner: the invoker coordinates dispatch through this DB,
+      # so a worker on a different one never receives the runner's commands
+      # (the distributed dev stack likewise shares one invoker DB).
+      MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL: "redis://redis:6379/1"
+      # Must match test-runner: shared tenant key derivation (ADR-0056)
+      MOTET_VAULT_MASTER_KEY: "test-shared-master-key-change-in-production"
+      MOTET_WORKER_EXEC_CWD_ALLOWLIST: "/var/motet/worker-exec"
+    volumes:
+      - ..:/app
+    networks:
+      - motet_test
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      embedding-server:
+        condition: service_healthy
+    working_dir: /app
+    # Single line: see the note on worker-1
+    command: bash -c "exec celery -A motet.core.workers.tasks worker --loglevel=info --pool=gevent --concurrency=10 --hostname=test-worker2@%h --queues=default,worker_management,event_delivery,command_processing,worker.cloud_test-worker-2"
+    profiles: ["workers"]
+
+  # Deployer worker (ADR-0071) — runs deploy/validate/publish/rollback/undeploy commands
+  # Must consume command_processing so deploy tasks are received; worker_id set so capabilities include deployment
+  deployer-worker:
+    build:
+      context: ..
+      dockerfile: docker/images/worker_lifecycle/Dockerfile
+    environment:
+      MOTET_REDIS_URL: "redis://redis:6379/1"
+      MOTET_POSTGRES_URL: "postgresql://motet:motet_test_password@postgres:5432/motet_test"
+      MOTET_LOG_LEVEL: "INFO"
+      MOTET_WORKER_ID: "cloud_lifecycle_management"
+      MOTET_MODEL_PROVIDER: "mock"
+      MOTET_MODEL_NAME: "mock-small"
+      MOTET_ENABLE_MEMORY: "true"
+      MOTET_MEMORY_BACKEND: "redis"
+      CELERY_BROKER_URL: "redis://redis:6379/1"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      # Must match test-runner: the invoker coordinates dispatch through this DB,
+      # so a worker on a different one never receives the runner's commands
+      # (the distributed dev stack likewise shares one invoker DB).
+      MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL: "redis://redis:6379/1"
+      # Must match test-runner: shared tenant key derivation (ADR-0056)
+      MOTET_VAULT_MASTER_KEY: "test-shared-master-key-change-in-production"
+    volumes:
+      - ..:/app
+    networks:
+      - motet_test
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    working_dir: /app
+    # Single line: see the note on worker-1. The per-worker queue matches
+    # MOTET_WORKER_ID so router-dispatched deploy commands land here.
+    command: bash -c "exec celery -A motet.core.workers.tasks worker --loglevel=info --pool=gevent --concurrency=2 --hostname=deployer@%h --queues=default,command_processing,worker_management,worker.cloud_lifecycle_management"
+    profiles: ["workers"]
+
+volumes:
+  postgres_test_data:
+  test_logs:
+  test_traces:
+  keycloak_test_data:
+
+networks:
+  motet_test:
+    driver: bridge
+

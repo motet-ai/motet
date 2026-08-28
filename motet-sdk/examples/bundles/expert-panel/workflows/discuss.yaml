@@ -1,0 +1,114 @@
+# discuss — expert panel workflow: parallel agent turns → synthesis.
+#
+# Demonstrates:
+#   1. Parallel agent turns: optimist and skeptic run as full agents simultaneously
+#   2. Agent-scoped memory: each agent's response is stored with its identity
+#   3. Cross-agent synthesis: synthesizer reads both analyses and recalls prior panels
+#   4. Full agent lifecycle: system prompts, turn hooks, tool access, memory finalize
+
+workflow_id: discuss
+name: Expert Panel Discussion
+output_field: final_response
+
+# The synthesizer's markdown IS the deliverable, so stream it straight to the
+# user. Without this the whole result (three full agent turns, ~170k chars) is
+# offloaded to an artifact that the calling agent then has to page back in to
+# find the synthesis — minutes of tool calls to recover text we already have.
+presentation:
+  user_facing: true
+  requires_llm: false
+  passthrough_field: final_response
+description: >
+  Run an expert panel discussion on a topic.  An Optimist and Skeptic
+  agent each take a full turn analyzing the topic in parallel from
+  opposing perspectives.  A Synthesizer agent then integrates both
+  viewpoints (plus any prior panel discussions recalled from memory)
+  into a balanced assessment.  Use for requests like "run an expert
+  panel on X", "debate Y", "what are the pros and cons of Z", or any
+  ask for a balanced multi-perspective assessment.
+
+  Each step runs core.agent_turn, so agents get their system prompts,
+  turn hooks (prepare_context, finalize_turn), tool access, and
+  automatic agent-scoped memory storage.
+
+  RESULT: The synthesize step's final_response contains a balanced
+  markdown assessment.  Present it directly to the user.  Do NOT answer
+  from your own knowledge or web search instead — the panel output is
+  the deliverable.  Takes roughly a minute (three agent turns).
+
+  Each step pins provider/model/thinking on core.agent_turn context so
+  the panel does not inherit a non-thinking chat model. Override via
+  the provider and model_name inputs.
+
+input_parameters:
+  topic:
+    type: string
+    description: Topic for the expert panel to discuss (e.g., "remote work", "AI regulation").
+    required: true
+  provider:
+    type: string
+    description: LLM provider for the three panel turns.
+    default: "openai"
+  model_name:
+    type: string
+    description: Thinking-capable model for the three panel turns.
+    default: "gpt-5.6-luna"
+
+steps:
+  analyze_optimist:
+    step_id: analyze_optimist
+    command_type: core.agent_turn
+    description: "Run the optimist agent to analyze the topic."
+    command_data:
+      agent_id: "expert-panel.optimist"
+      messages:
+        - role: system
+          content: "Analyze the following topic from your perspective: {{topic}}"
+      context:
+        model_provider: "{{provider}}"
+        model_name: "{{model_name}}"
+        enable_thinking: true
+    dependencies: []
+
+  analyze_skeptic:
+    step_id: analyze_skeptic
+    command_type: core.agent_turn
+    description: "Run the skeptic agent to analyze the topic."
+    command_data:
+      agent_id: "expert-panel.skeptic"
+      messages:
+        - role: system
+          content: "Analyze the following topic from your perspective: {{topic}}"
+      context:
+        model_provider: "{{provider}}"
+        model_name: "{{model_name}}"
+        enable_thinking: true
+    dependencies: []
+
+  synthesize:
+    step_id: synthesize
+    command_type: core.agent_turn
+    description: "Run the synthesizer agent to produce a balanced assessment."
+    command_data:
+      agent_id: "expert-panel.synthesizer"
+      messages:
+        - role: system
+          content: >
+            Synthesize the following analyses on the topic "{{topic}}".
+
+            --- OPTIMIST ANALYSIS ---
+            {{analyze_optimist.final_response}}
+
+            --- SKEPTIC ANALYSIS ---
+            {{analyze_skeptic.final_response}}
+
+            Produce a balanced assessment integrating both perspectives.
+            Before synthesizing, check for any prior panel discussions on
+            this topic or related topics using the recall_discussion tool.
+      context:
+        model_provider: "{{provider}}"
+        model_name: "{{model_name}}"
+        enable_thinking: true
+    dependencies:
+      - analyze_optimist
+      - analyze_skeptic

@@ -1,0 +1,137 @@
+# Model Profiles Seed (ADR-0064)
+#
+# Optional: seed Redis-backed model profiles at container startup.
+# Enable by setting:
+#   - MOTET_ENABLE_MODEL_PROFILES=true
+#   - MOTET_SEED_MODEL_PROFILES_ON_STARTUP=true
+#   - MOTET_MODEL_PROFILE_SEED_FILE=/app/config/model_profiles.yaml
+#
+# Format:
+#   profiles: [ModelProfile...]
+#
+# Each profile maps directly to motet.core.models.profiles.ModelProfile.
+
+profiles:
+  - tenant_id: "default"
+    name: "default"
+
+    # Provider-wide defaults applied for this tenant.
+    # These are policy/config choices (not capabilities).
+    provider_defaults:
+      openai:
+        # Default adapter for OpenAI in this tenant (must be in ModelSpec.supported_adapters)
+        adapter: "responses"
+        # Use built-in provider tools when supported by model+adapter, with allowlist
+        tools_enabled: true
+        tool_allowlist:
+          - "openai.web_search"
+      anthropic:
+        adapter: "messages"
+        tools_enabled: true
+        tool_allowlist:
+          - "anthropic.web_search"
+
+    # Optional per-model overrides for this tenant.
+    model_overrides: {}
+
+  - tenant_id: "default"
+    name: "scheduled-default"
+
+    # Scheduled commands default profile (can be customized per tenant).
+    provider_defaults:
+      openai:
+        adapter: "responses"
+        tools_enabled: true
+        tool_allowlist:
+          - "openai.web_search"
+      anthropic:
+        adapter: "messages"
+        tools_enabled: true
+        tool_allowlist:
+          - "anthropic.web_search"
+
+    model_overrides: {}
+
+  # Dev convenience: if your Keycloak tenant mapping resolves to "acme" (see MOTET_TENANT_ID_MAP_JSON),
+  # seed the same default profile for that tenant so Ops can display it immediately.
+  - tenant_id: "acme"
+    name: "default"
+
+    provider_defaults:
+      openai:
+        adapter: "responses"
+        tools_enabled: true
+        tool_allowlist:
+          - "openai.web_search"
+      anthropic:
+        adapter: "messages"
+        tools_enabled: true
+        tool_allowlist:
+          - "anthropic.web_search"
+
+    model_overrides: {}
+
+  - tenant_id: "acme"
+    name: "scheduled-default"
+
+    provider_defaults:
+      openai:
+        adapter: "responses"
+        tools_enabled: true
+        tool_allowlist:
+          - "openai.web_search"
+      anthropic:
+        adapter: "messages"
+        tools_enabled: true
+        tool_allowlist:
+          - "anthropic.web_search"
+
+    model_overrides: {}
+
+  # Global tenant convenience: some Keycloak setups issue tokens mapped to "motet-global".
+  # Seed the same baseline profile for that tenant so the Ops dashboard can display it immediately.
+  - tenant_id: "motet-global"
+    name: "default"
+
+    provider_defaults:
+      openai:
+        adapter: "responses"
+        tools_enabled: true
+        tool_allowlist:
+          - "openai.web_search"
+      anthropic:
+        adapter: "messages"
+        tools_enabled: true
+        tool_allowlist:
+          - "anthropic.web_search"
+
+    model_overrides:
+      openai:
+        gpt-4.1-mini:
+          adapter: "responses"
+          tools_enabled: true
+          tool_allowlist:
+            - "openai.web_search"
+
+  - tenant_id: "motet-global"
+    name: "scheduled-default"
+
+    provider_defaults:
+      openai:
+        adapter: "responses"
+        tools_enabled: true
+        tool_allowlist:
+          - "openai.web_search"
+      anthropic:
+        adapter: "messages"
+        tools_enabled: true
+        tool_allowlist:
+          - "anthropic.web_search"
+
+    model_overrides:
+      openai:
+        gpt-4.1-mini:
+          adapter: "responses"
+          tools_enabled: true
+          tool_allowlist:
+            - "openai.web_search"

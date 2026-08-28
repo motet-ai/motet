@@ -1,0 +1,30 @@
+agents:
+  - agent_id: "prompt-manager"
+    aliases: ["langfuse", "prompt-manager"]
+    display_name: "Langfuse CMS"
+    description: >
+      Demo agent whose system prompt is fetched from Langfuse Cloud on every
+      agent_turn via context_inject (langfuse-cms.inject_langfuse_prompt).
+      Edit the Cloud prompt labeled production and the next Chat Explorer
+      message uses it. Static FALLBACK in the inject command applies when
+      credentials/Cloud fail. YAML system_prompt is intentionally empty so
+      the injected message is the sole system prompt.
+    allowed_roles: ["*"]
+    # Empty: live prompt comes from turn_hooks.context_inject each turn.
+    # AgentConfig still requires the field; assemble_turn_history skips blanks.
+    system_prompt: ""
+    tool_filter:
+      mode: "discovery"
+      required_tools:
+        - "langfuse-cms.get_prompt"
+        - "langfuse-cms.list_prompts"
+        - "langfuse-cms.update_prompt"
+    turn_hooks:
+      context_inject:
+        - "langfuse-cms.inject_langfuse_prompt"
+      conversation_analysis: "core.conversation_analysis"
+      memory_reset: "core.memory_reset"
+      context_prepare: "core.prepare_context"
+      finalize: "core.finalize_turn"
+      after_finalize:
+        - "langfuse-cms.record_turn_to_langfuse"

@@ -1,0 +1,8 @@
+format_version: "1"
+name: "background-thinker"
+version: "0.1.0"
+description: "Example bundle demonstrating scheduled commands for autonomous background thinking — recurring reflection, delayed one-shot thinking, schedule lifecycle management, and memory-persisted insights."
+load_order:
+  - commands
+  - tools
+  - workflows

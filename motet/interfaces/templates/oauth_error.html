@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Error</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .container {
+            background: white;
+            padding: 3rem;
+            border-radius: 1rem;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            max-width: 500px;
+        }
+        h1 { color: #c53030; margin-top: 0; }
+        .error-icon { font-size: 4rem; margin-bottom: 1rem; }
+        .error-message {
+            color: #4a5568;
+            margin: 1.5rem 0;
+            padding: 1rem;
+            background: #fed7d7;
+            border-radius: 0.5rem;
+            word-break: break-word;
+        }
+        .btn {
+            display: inline-block;
+            margin-top: 1.5rem;
+            padding: 0.75rem 2rem;
+            background: #c53030;
+            color: white;
+            text-decoration: none;
+            border-radius: 0.5rem;
+            border: none;
+            cursor: pointer;
+        }
+        .btn:hover { background: #9b2c2c; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="error-icon">❌</div>
+        <h1>Authorization Failed</h1>
+        <div class="error-message">{{ error }}</div>
+        <button class="btn" onclick="window.close()">Close Window</button>
+        <br><br>
+        <a href="/ops" style="color: #c53030;">Return to Dashboard</a>
+    </div>
+
+    <script>
+        // Notify opener of failure
+        if (window.opener && !window.opener.closed) {
+            window.opener.postMessage({
+                type: 'oauth_complete',
+                provider: '{{ provider }}',
+                success: false,
+                error: '{{ error|replace("'", "\\'")|replace('"', '\\"')|replace('\n', ' ') }}'
+            }, '*');
+        }
+    </script>
+</body>
+</html>
+

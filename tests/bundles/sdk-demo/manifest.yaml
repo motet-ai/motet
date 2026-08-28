@@ -1,0 +1,6 @@
+format_version: "1"
+name: "sdk-demo"
+version: "0.1.0"
+description: "Bundle that uses motet_sdk imports (ADR-0080 Phase 1 test)."
+load_order:
+  - commands

@@ -1,0 +1,22 @@
+celery
+redis>=4.5.0
+valkey-glide>=2.5.0
+valkey-glide-sync>=2.5.0
+boto3>=1.42.97
+structlog>=23.0.0
+python-dotenv>=1.0.0
+click>=8.1.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+typing-extensions>=4.0.0
+croniter>=1.4.0
+msgpack>=1.0.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+cryptography>=41.0.0
+aiofiles>=23.0.0
+httpx>=0.25.0
+
+# Image processing for derivations (ADR-0062)
+Pillow>=10.0.0
+

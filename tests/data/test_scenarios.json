@@ -1,0 +1,176 @@
+{
+  "basic_scenarios": {
+    "simple_math": {
+      "description": "Simple mathematical calculation",
+      "messages": [{"role": "user", "content": "What is 25 * 17?"}],
+      "expected_keywords": ["425", "four hundred", "twenty-five"],
+      "max_response_time_ms": 3000,
+      "reasoning_complexity": "low"
+    },
+    "factual_question": {
+      "description": "Basic factual question",
+      "messages": [{"role": "user", "content": "What is the capital of France?"}],
+      "expected_keywords": ["Paris", "capital", "France"],
+      "max_response_time_ms": 2000,
+      "reasoning_complexity": "low"
+    },
+    "definition_request": {
+      "description": "Request for definition",
+      "messages": [{"role": "user", "content": "What is machine learning?"}],
+      "expected_keywords": ["algorithm", "data", "learn", "artificial"],
+      "max_response_time_ms": 4000,
+      "reasoning_complexity": "medium"
+    }
+  },
+  "complex_reasoning": {
+    "multi_step_problem": {
+      "description": "Multi-step problem solving",
+      "messages": [{"role": "user", "content": "If a train travels 60 mph for 2 hours, then 80 mph for 1.5 hours, what is the total distance and average speed?"}],
+      "expected_keywords": ["240", "distance", "average", "speed"],
+      "max_response_time_ms": 8000,
+      "reasoning_complexity": "high"
+    },
+    "comparative_analysis": {
+      "description": "Comparative analysis task",
+      "messages": [{"role": "user", "content": "Compare and contrast renewable and non-renewable energy sources, including their environmental impact"}],
+      "expected_keywords": ["renewable", "solar", "wind", "fossil", "environment", "carbon"],
+      "max_response_time_ms": 12000,
+      "reasoning_complexity": "high"
+    },
+    "causal_reasoning": {
+      "description": "Causal reasoning task",
+      "messages": [{"role": "user", "content": "Explain the causes and effects of climate change on global food security"}],
+      "expected_keywords": ["climate", "temperature", "agriculture", "food", "security"],
+      "max_response_time_ms": 15000,
+      "reasoning_complexity": "high"
+    }
+  },
+  "tool_scenarios": {
+    "note_creation": {
+      "description": "Create a note using tools",
+      "messages": [{"role": "user", "content": "Please create a note that says 'Test note for distributed system'"}],
+      "expected_tools": ["note"],
+      "expected_keywords": ["note", "created", "saved"],
+      "max_response_time_ms": 5000
+    },
+    "web_search": {
+      "description": "Perform web search",
+      "messages": [{"role": "user", "content": "Search for recent news about artificial intelligence"}],
+      "expected_tools": ["web_search"],
+      "expected_keywords": ["search", "found", "artificial intelligence"],
+      "max_response_time_ms": 10000
+    },
+    "memory_operations": {
+      "description": "Memory store and retrieval",
+      "messages": [{"role": "user", "content": "Remember that this conversation is 'test_conversation' and then recall conversations with that name"}],
+      "expected_tools": ["memory_store", "memory_recall"],
+      "expected_keywords": ["tagged", "found", "conversations"],
+      "max_response_time_ms": 8000
+    }
+  },
+  "streaming_scenarios": {
+    "short_story": {
+      "description": "Generate a short story",
+      "messages": [{"role": "user", "content": "Tell me a short story about a robot learning to paint"}],
+      "stream": true,
+      "min_tokens": 50,
+      "max_tokens": 200,
+      "max_time_to_first_token_ms": 2000,
+      "min_tokens_per_second": 5
+    },
+    "technical_explanation": {
+      "description": "Technical explanation with streaming",
+      "messages": [{"role": "user", "content": "Explain how neural networks work, including backpropagation"}],
+      "stream": true,
+      "min_tokens": 100,
+      "max_tokens": 400,
+      "max_time_to_first_token_ms": 3000,
+      "min_tokens_per_second": 4
+    },
+    "creative_writing": {
+      "description": "Creative writing task",
+      "messages": [{"role": "user", "content": "Write a poem about distributed computing"}],
+      "stream": true,
+      "min_tokens": 30,
+      "max_tokens": 150,
+      "max_time_to_first_token_ms": 2500,
+      "min_tokens_per_second": 6
+    }
+  },
+  "error_scenarios": {
+    "invalid_tool": {
+      "description": "Request for non-existent tool",
+      "messages": [{"role": "user", "content": "Use the 'nonexistent_tool' to do something"}],
+      "expected_status": "error",
+      "expected_error_type": "tool_not_found"
+    },
+    "malformed_request": {
+      "description": "Malformed request structure",
+      "payload": {"invalid": "structure"},
+      "expected_status": "error",
+      "expected_error_type": "validation_error"
+    },
+    "rate_limit_test": {
+      "description": "Test rate limiting",
+      "rapid_requests": 20,
+      "expected_rate_limited": true,
+      "max_concurrent": 10
+    }
+  },
+  "performance_baselines": {
+    "local_execution": {
+      "simple_chat_ms": 1000,
+      "complex_reasoning_ms": 5000,
+      "tool_execution_ms": 2000,
+      "memory_operation_ms": 500,
+      "planning_ms": 3000
+    },
+    "acceptable_overhead": {
+      "max_overhead_percent": 25,
+      "max_latency_increase_ms": 2000
+    },
+    "throughput_targets": {
+      "min_requests_per_second": 2.0,
+      "min_concurrent_requests": 10,
+      "target_success_rate": 0.95
+    }
+  },
+  "load_test_profiles": {
+    "light_load": {
+      "concurrent_users": 3,
+      "requests_per_user": 5,
+      "ramp_up_time_seconds": 10,
+      "test_duration_seconds": 60
+    },
+    "moderate_load": {
+      "concurrent_users": 10,
+      "requests_per_user": 10,
+      "ramp_up_time_seconds": 30,
+      "test_duration_seconds": 120
+    },
+    "heavy_load": {
+      "concurrent_users": 25,
+      "requests_per_user": 8,
+      "ramp_up_time_seconds": 60,
+      "test_duration_seconds": 180
+    }
+  },
+  "ui_test_data": {
+    "chat_interface": {
+      "basic_message": "Hello, this is a test message",
+      "long_message": "This is a longer test message that should trigger more complex processing and potentially multiple reasoning steps to generate a comprehensive response",
+      "special_characters": "Test with special chars: !@#$%^&*()_+-=[]{}|;':\",./<>?",
+      "unicode_message": "Test with unicode: 你好 🌟 café naïve résumé"
+    },
+    "streaming_interface": {
+      "short_prompt": "Count to 5",
+      "medium_prompt": "Explain photosynthesis",
+      "long_prompt": "Write a detailed analysis of the economic impact of artificial intelligence on various industries"
+    },
+    "tool_interface": {
+      "note_params": {"text": "UI test note"},
+      "search_params": {"query": "artificial intelligence"},
+      "memory_params": {"tags": ["ui_test"], "limit": 5}
+    }
+  }
+}

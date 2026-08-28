@@ -1,0 +1,1421 @@
+name: motet_dev
+
+# Motet-bearing services pin
+#   ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/<name>:${MOTET_IMAGE_TAG:-v0.1.0}
+# `motet-cli local up` pulls when the tag is not local (`pull_policy: missing`).
+# `motet-cli local up --build` rebuilds from this tree. vite-dev, vite-admin,
+# and local-inference stay build-only. Valkey, Postgres, and SeaweedFS stay
+# upstream images.
+#
+# Application Valkey client defaults to redis-py. Set MOTET_VALKEY_CLIENT=glide
+# to opt in. Celery and Pub/Sub stay on redis-py either way.
+#
+# Cap json-file container logs so they cannot fill the Docker VM / host disk.
+# Without rotation, chatty services (workers especially) accumulate gigabytes of
+# /var/lib/docker/containers/*/*-json.log over long-running stacks (observed
+# wedging an EC2 instance at 100% disk; the same leak applies to Docker Desktop).
+# 50m x 3 files = ~150 MB max per service.
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+services:
+  # Valkey (Redis-compatible) - Message Bus and Caching
+  redis:
+    logging: *default-logging
+    image: ${MOTET_VALKEY_IMAGE:-valkey/valkey-bundle:9.1.2}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      valkey-server
+        --appendonly yes
+        --maxmemory 8gb
+        --maxmemory-policy allkeys-lru
+        --timeout 0
+    volumes:
+      - redis_data:/data
+    networks:
+      motet_dev:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      # Use SET (not PING) because PING/INFO succeed even while Valkey is loading its
+      # AOF/RDB dataset.  Two pitfalls this check must avoid (both previously let the
+      # check pass during loading, so mcp-manager started before Redis was usable and
+      # came up with 0 MCP instances):
+      #   1. valkey-cli exits 0 even when the server replies "(error) LOADING ...";
+      #      `-e` makes server errors set a non-zero exit code.
+      #   2. `INFO persistence` contains `async_loading:0`, which matches an unanchored
+      #      grep for 'loading:0' even while `loading:1` — hence the ^ anchor.
+      test: ["CMD-SHELL", "valkey-cli -e -p 6379 set healthcheck:probe 1 EX 30 && valkey-cli -p 6379 info persistence | grep -q '^loading:0'"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    restart: unless-stopped
+
+  redis-tls:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/redis-tls:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: ./docker/redis/tls-proxy
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "${REDIS_TLS_PORT:-6380}:6380"
+    volumes:
+      - ./tls:/tls:ro
+    networks:
+      - motet_dev
+    restart: unless-stopped
+    healthcheck:
+      # Handshake only: compose services use ssl_cert_reqs=CERT_NONE / none.
+      test: ["CMD-SHELL", "timeout 2 openssl s_client -connect 127.0.0.1:6380 </dev/null 2>/dev/null | grep -q CONNECTED"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # SeaweedFS — local S3-compatible object store for artifact payloads.
+  #
+  # ``weed mini`` runs master + volume + filer + S3 in one process (dev-shaped).
+  # Motet's S3ArtifactStore talks to the S3 API; inspect via motet-cli artifacts
+  # or the Admin UI on :23646. Apache-2.0; preferred over archived MinIO CE.
+  seaweedfs:
+    logging: *default-logging
+    image: ${MOTET_SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.39}
+    command: >
+      mini -dir=/data -ip.bind=0.0.0.0 -s3.port=8333
+    environment:
+      # Pre-create the Motet artifact bucket + identity for weed mini.
+      AWS_ACCESS_KEY_ID: ${MOTET_ARTIFACT_STORE_S3_ACCESS_KEY_ID:-motet-dev}
+      AWS_SECRET_ACCESS_KEY: ${MOTET_ARTIFACT_STORE_S3_SECRET_ACCESS_KEY:-motet-dev-secret}
+      S3_BUCKET: ${MOTET_ARTIFACT_STORE_S3_BUCKET:-motet-artifacts}
+    ports:
+      - "${MOTET_SEAWEEDFS_S3_PORT:-8333}:8333"
+      - "${MOTET_SEAWEEDFS_ADMIN_PORT:-23646}:23646"
+    volumes:
+      - seaweedfs_data:/data
+    healthcheck:
+      # Authenticated S3 root often returns 403; any HTTP status means the API is up.
+      test:
+        [
+          "CMD-SHELL",
+          "code=$$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/); echo $$code | grep -qE '^[2345][0-9]{2}$$'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Local OCI registry for ADR-0100 bundle exec image builds.
+  #
+  # The deployer worker uses the host Docker daemon via /var/run/docker.sock,
+  # so the image ref must be reachable from that daemon. Publishing the
+  # registry on localhost keeps local dev builds simple while allowing
+  # operators to override the host port if 5000 is already in use.
+  registry:
+    logging: *default-logging
+    image: registry:2
+    ports:
+      - "${MOTET_DEPLOYER_BUILD_REGISTRY_PORT:-5050}:5000"
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registry_data:/var/lib/registry
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # PostgreSQL - Vector Store and Metadata
+  postgres:
+    logging: *default-logging
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: motet_distributed
+      POSTGRES_USER: motet
+      POSTGRES_PASSWORD: motet_dev_password
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U motet -d motet_distributed"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Database Migrator - Initialize pgvector tables
+  migrator:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/migrator:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/migrator/Dockerfile
+    command: bash -lc "python -m motet.cli database migrate-pgvector"
+    environment:
+      - MOTET_PGVECTOR_DSN=postgresql://motet:motet_dev_password@postgres:5432/motet_distributed
+      - MOTET_PGVECTOR_TABLE=imf_embeddings
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - motet_dev
+    restart: "no"
+
+  # Keycloak Identity Provider (JWT Authentication)
+  keycloak:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/keycloak:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: ./docker/keycloak
+    command:
+      - start-dev
+      - --import-realm
+      - --features=preview,organization,scripts
+      - --http-enabled=true
+      - --hostname-strict=false
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-localhost}
+      KC_FEATURES: preview,organization,scripts
+      # Dev: serve /health/* on 8080 so the healthcheck avoids kcadm (faster "healthy") and bash /dev/tcp works (no curl in image).
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_HEALTH_ENABLED: "false"
+      # Dev JVM: quicker C2 profile (less peak perf; fine for local).
+      JAVA_OPTS_APPEND: "-XX:TieredStopAtLevel=1"
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+    mem_limit: 1536m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf "GET /health/ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3 &&
+          IFS= read -r line <&3 && [[ "$$line" == *"200"* ]]'
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  keycloak-bootstrap:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/keycloak-bootstrap:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/keycloak/bootstrap.Dockerfile
+      args:
+        KEYCLOAK_VERSION: "26.4.0"
+    # NOTE: keycloak-bootstrap is a convenience initializer. It should never block the stack
+    # from starting in dev, since Keycloak may be configured manually or seeded via the host script.
+    command: >
+      --server http://keycloak:8080
+      --realm motet
+      --admin-realm master
+      --user ${KEYCLOAK_ADMIN:-admin}
+      --password ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      --no-compose
+      --kcadm-path /opt/keycloak/bin/kcadm.sh
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./docker/keycloak/bootstrap_orgs.py:/app/bootstrap_orgs.py
+    networks:
+      - motet_dev
+    restart: "no"
+
+  # Vault Initializer - Initialize distributed vault service
+  vault-init:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/vault-init:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/vault-init/Dockerfile
+    command: >
+      bash -c "
+        echo '🔐 Starting Vault Initialization Service...';
+        echo '⏳ Waiting for Redis to be ready...';
+        sleep 5;
+        echo '🚀 Initializing vault with default credentials...';
+        cd /app && python docker/vault/vault_init.py --env-file .env;
+        echo '✅ Vault initialization completed, service will exit';
+      "
+    environment:
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      - MOTET_VAULT_MASTER_KEY=docker-dev-master-key-change-in-production
+      # Model API Keys (empty defaults so unset host env does not warn)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - MOTET_XAI_API_KEY=${XAI_API_KEY:-}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - MOTET_META_API_KEY=${MOTET_META_API_KEY:-${MODEL_API_KEY:-}}
+      - META_API_KEY=${META_API_KEY:-${MODEL_API_KEY:-}}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - MOTET_MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOTET_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      # Google Workspace OAuth: credentials stored in Vault (ADR-0057)
+      # GitHub Authentication
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_PERSONAL_TOKEN=${GITHUB_PERSONAL_TOKEN:-}
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN:-}
+      # Weather API
+      - ACCUWEATHER_API_KEY=${ACCUWEATHER_API_KEY:-}
+      # System Configuration
+      - MOTET_ENVIRONMENT=development
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - ./tls:/tls:ro
+    networks:
+      - motet_dev
+    restart: "no"  # Run once and exit
+
+  # MCP Instance Manager — sibling deployment per ADR-0105 (2026-04-20).
+  #
+  # One shared manager serves both worker-1 and worker-2 for the local dev stack
+  # ("Topology Shape A": sibling-per-compose-install). Workers no longer spawn
+  # an in-process MCP manager subprocess; they discover this service via
+  # MOTET_MCP_MANAGER_ENDPOINT and route MCP requests on Redis Streams keyed by
+  # MOTET_MCP_MANAGER_ID.
+  #
+  # The manager image is a small control-plane image for MCP proxying. MCP
+  # servers themselves run as Docker sidecar containers via the mounted Engine
+  # socket, so this image does not include the worker browser/ML runtime.
+  mcp-manager:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/mcp-manager:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/mcp-manager/Dockerfile
+    command: >
+      bash -c '
+        echo "Starting mcp-manager (sibling MCP instance manager, ADR-0105)...";
+        exec python -m motet.core.tools.mcp_motet.proxy.mcp_instance_manager \
+          --manager-id "$$MOTET_MCP_MANAGER_ID" \
+          --metrics-port 9090 \
+          --health-port 9091
+      '
+    ports:
+      - "9190:9090"  # MCP manager metrics endpoint (host 9190 -> container 9090)
+      - "9191:9091"  # MCP manager health endpoint  (host 9191 -> container 9091)
+    environment:
+      # Identity (ADR-0105 §R2/§R3): manager_id is the bus routing prefix,
+      # used for Redis Streams / PUB-SUB / readiness set on the worker side.
+      - MOTET_MCP_MANAGER_ID=mcp-local-default
+      - MOTET_WORKER_ID=mcp-manager  # observability tag only
+      - MOTET_MCP_ENABLED=true
+      - MCP_INSTANCE_MANAGER_CONFIG=/app/config/mcp_instance_manager.yaml
+      - MOTET_MCP_PER_SERVICE_INIT_TIMEOUT_SECONDS=240
+      - MOTET_MCP_INITIALIZE_TIMEOUT_SECONDS=180
+      # Stdio MCP servers run as Docker sidecar containers (Engine API via mounted socket)
+      - MOTET_MCP_EXEC_BACKEND=docker
+      - MOTET_MCP_DOCKER_IMAGE=node:20-bookworm-slim
+      # Join MCP sidecars to the compose project network so service DNS works
+      # (e.g. Playwright → vite-builder-chat for ADR-0122 ui_verify).
+      - MOTET_MCP_DOCKER_NETWORK=${MOTET_MCP_DOCKER_NETWORK:-motet_dev_network}
+      - MOTET_MCP_DOCKER_EXTRA_HOSTS=${MOTET_MCP_DOCKER_EXTRA_HOSTS:-host.docker.internal:host-gateway}
+      - MOTET_MCP_PURGE_ON_KEK_MISMATCH=true
+      # Redis bus (TLS)
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      # Vault (MCP services use vault-stored credentials per ADR-0057)
+      - MOTET_VAULT_ENABLED=true
+      - MOTET_VAULT_MASTER_KEY=docker-dev-master-key-change-in-production
+      # Tenant identity for vault credential prefetch at startup (CommandContext)
+      - MOTET_TENANT_ID=default
+      - MOTET_MOTET_ID=default
+      # OAuth-backed MCP services (Google Workspace etc.) need provider keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MOTET_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - MOTET_XAI_API_KEY=${XAI_API_KEY:-}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - MOTET_META_API_KEY=${MOTET_META_API_KEY:-${MODEL_API_KEY:-}}
+      - META_API_KEY=${META_API_KEY:-${MODEL_API_KEY:-}}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - MOTET_MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOTET_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # GitHub MCP (ADR-0122): discovery skips vault and inherits manager env into the
+      # stdio sidecar. Without a token the official server hangs ~180s on initialize
+      # and mcp-manager fails its compose healthcheck.
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN:-${GITHUB_TOKEN:-}}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_PERSONAL_TOKEN=${GITHUB_PERSONAL_TOKEN:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - ./tls:/tls:ro
+      # Manager spawns MCP server containers via Engine API (ADR-0034 / ADR-0065)
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 90s
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Local Inference Manager — sibling deployment per ADR-0105 (LocalInferenceManager hoist).
+  #
+  # Mirrors the mcp-manager hoist above: workers no longer spawn a per-worker
+  # LocalInferenceManager subprocess. One shared manager runs as an independent
+  # supervised service ("Topology Shape A": sibling-per-compose-install) and serves all
+  # workers in the stack. It is decoupled from any single worker's lifecycle, so
+  # `docker compose restart worker-2` (or a worker upgrade) preserves the warm model
+  # cache — the manager container and its loaded models survive.
+  #
+  # Workers reach it on Redis Streams keyed by the shared MOTET_LOCAL_INFERENCE_MANAGER_ID.
+  # Uses its own small control-plane image (docker/images/local-inference), consistent with
+  # the mcp-manager / embedding-server sibling pattern — NOT the heavy worker image. The
+  # image carries only the GGUF runtime (llama.cpp); GGUF weights are mounted read-only at
+  # /app/models.
+  local-inference:
+    logging: *default-logging
+    build:
+      context: .
+      dockerfile: docker/images/local-inference/Dockerfile
+    command: >
+      bash -c '
+        echo "Starting local-inference (sibling LocalInferenceManager, ADR-0105)...";
+        exec python -m motet.core.models.local.inference_manager \
+          --manager-id "$$MOTET_LOCAL_INFERENCE_MANAGER_ID"
+      '
+    environment:
+      # Identity (ADR-0105 §R2/§R3): manager_id is the bus routing prefix shared with the
+      # in-worker LocalInferenceClient. Must match MOTET_LOCAL_INFERENCE_MANAGER_ID on workers.
+      - MOTET_LOCAL_INFERENCE_MANAGER_ID=local-inference-default
+      - MOTET_WORKER_ID=local-inference  # observability/status attribution only
+      - MOTET_LOCAL_INFERENCE_ENABLED=true
+      # Inference pool sizing (these now belong to the manager, not the worker)
+      - MOTET_GPU_WORKER_COUNT=1            # Inference worker subprocesses (conservative for CPU)
+      - MOTET_GPU_DEVICE_IDS=0              # Device ID (ignored for CPU/Apple Silicon)
+      # Cache memory budget (GB). Sized for the largest tier member, the Gemma 4
+      # 26B-A4B MoE (~17 GB GGUF), so the manager's accounting does not refuse it
+      # (ADR-0117). Must fit under the container mem_limit below and the Docker VM
+      # total — on macOS raise Docker Desktop's memory ceiling accordingly.
+      - MOTET_GPU_MAX_MEMORY_GB=24          # Max cache memory for the manager (GB)
+      - MOTET_MODEL_CACHE_SIZE=2            # Models to cache
+      - MOTET_BATCH_WAIT_MS=50              # Request batching window (ms)
+      - MOTET_MAX_BATCH_SIZE=8              # Max requests per batch
+      - MOTET_LOCAL_MODEL_DIR=/app/models   # GGUF model directory (DEFAULT_MODEL_PATHS base)
+      # Redis bus (TLS) — same transport the workers publish on
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      - MOTET_EVENTS_BACKEND=celery
+      - HF_HOME=/opt/imf_hf_cache
+      - HF_TOKEN=${HF_TOKEN:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - ./tls:/tls:ro
+      - ./models:/app/models:ro  # GGUF weights (read-only)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - motet_dev
+    restart: unless-stopped
+    # Container memory ceiling. The CPU-only container runs all local GGUFs; the
+    # largest, Gemma 4 26B-A4B (~17 GB), plus KV cache + Python overhead needs
+    # this headroom (ADR-0117). NOTE: on macOS, Docker Desktop's Linux VM has no
+    # Metal access, so this is CPU-only and bounded by the VM's total memory —
+    # raise Docker Desktop's memory ceiling above this limit (≥32 GB recommended)
+    # or the 26B will be OOM-killed (exit 137). For fast 26B inference, run the
+    # manager natively on the host (Metal); the small models run fine here.
+    mem_limit: 24g
+
+  # ADR-0107: Sibling embedding server for text embeddings.
+  #
+  # Workers call this service over HTTP instead of loading the
+  # SentenceTransformer model in each worker process.
+  embedding-server:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/embedding-server:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/embedding-server/Dockerfile
+    command: >
+      bash -c "
+        echo 'Starting embedding server (ADR-0107)...';
+        exec python -m motet.core.embedding.server --host 0.0.0.0 --port 8091
+      "
+    ports:
+      - "${MOTET_EMBEDDING_SERVER_PORT:-8091}:8091"
+    environment:
+      - MOTET_EMBEDDING_TEXT_MODEL=${MOTET_EMBEDDING_TEXT_MODEL:-sentence-transformers/all-MiniLM-L12-v2}
+      - HF_HOME=/opt/imf_hf_cache
+      - TRANSFORMERS_CACHE=/opt/imf_hf_cache/transformers
+      - SENTENCE_TRANSFORMERS_HOME=/opt/imf_hf_cache/sentence_transformers
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    volumes:
+      - .:/app
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8091/healthz', timeout=5).read()\""]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Main HTTP Interface (image includes built Vite apps; dev volume .:/app overrides them so use vite-dev/vite-admin for frontend)
+  motet-api:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/motet-api:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/api/Dockerfile
+    command: >
+      bash -c "
+        echo 'Starting API server...';
+        exec python -m motet.server --host 0.0.0.0 --port 8000
+      "
+    ports:
+      - "8000:8000"
+    environment:
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      - MOTET_POSTGRES_URL=postgresql://motet:motet_dev_password@postgres:5432/motet_distributed
+      # Memory Configuration
+      - MOTET_ENABLE_MEMORY=true
+      - MOTET_MEMORY_BACKEND=redis
+      # LTM semantic search: Valkey Search (shared redis service) + async embed via core.memory_vector_index (ADR-0092)
+      - MOTET_ENABLE_VECTOR_MEMORY=true
+      - MOTET_STORE_ASSISTANT_VECTOR=true
+      - MOTET_MEMORY_AGENT_SCOPE_MODE=prefer
+      # ADR-0107 sibling embedding server (API MotetStack must not load SentenceTransformer).
+      - MOTET_EMBEDDING_TOPOLOGY=sibling
+      - MOTET_EMBEDDING_ENDPOINT=http://embedding-server:8091
+      - MOTET_EMBEDDING_REQUEST_TIMEOUT_SECONDS=10
+      - MOTET_EMBEDDING_REQUEST_MAX_ATTEMPTS=3
+      - MOTET_EMBEDDING_RETRY_BACKOFF_SECONDS=0.25
+      - MOTET_EMBEDDING_CIRCUIT_BREAKER_FAILURE_THRESHOLD=3
+      - MOTET_EMBEDDING_CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECONDS=30
+      # ADR-0063: text artifact RAG for uploaded/derived artifacts.
+      - MOTET_ARTIFACT_RAG_ENABLED=true
+      - MOTET_ARTIFACT_RAG_INDEX_ON_DERIVATION=true
+      - MOTET_ARTIFACT_RAG_HYBRID_ENABLED=true
+      - MOTET_ARTIFACT_RAG_NATIVE_TEXT_MODE=auto
+      - MOTET_ARTIFACT_RAG_TOP_K=5
+      - MOTET_ARTIFACT_RAG_SIMILARITY_THRESHOLD=0.0
+      - MOTET_ARTIFACT_RAG_TOKEN_BUDGET=4000
+      # Artifact payload store: SeaweedFS S3 (local). Redis keeps metadata/indexes.
+      # Set MOTET_ARTIFACT_STORE_BACKEND=redis to revert to Redis-only payloads.
+      - MOTET_ARTIFACT_STORE_BACKEND=${MOTET_ARTIFACT_STORE_BACKEND:-s3}
+      - MOTET_ARTIFACT_STORE_S3_BUCKET=${MOTET_ARTIFACT_STORE_S3_BUCKET:-motet-artifacts}
+      - MOTET_ARTIFACT_STORE_S3_PREFIX=${MOTET_ARTIFACT_STORE_S3_PREFIX:-artifacts}
+      - MOTET_ARTIFACT_STORE_S3_ENDPOINT_URL=${MOTET_ARTIFACT_STORE_S3_ENDPOINT_URL:-http://seaweedfs:8333}
+      - MOTET_ARTIFACT_STORE_S3_REGION=${MOTET_ARTIFACT_STORE_S3_REGION:-us-east-1}
+      - MOTET_ARTIFACT_STORE_S3_ACCESS_KEY_ID=${MOTET_ARTIFACT_STORE_S3_ACCESS_KEY_ID:-motet-dev}
+      - MOTET_ARTIFACT_STORE_S3_SECRET_ACCESS_KEY=${MOTET_ARTIFACT_STORE_S3_SECRET_ACCESS_KEY:-motet-dev-secret}
+      - MOTET_ARTIFACT_STORE_S3_FORCE_PATH_STYLE=${MOTET_ARTIFACT_STORE_S3_FORCE_PATH_STYLE:-true}
+      - MOTET_ARTIFACT_STORE_S3_USE_SSL=${MOTET_ARTIFACT_STORE_S3_USE_SSL:-false}
+      - MOTET_ARTIFACT_STORE_S3_SSE=${MOTET_ARTIFACT_STORE_S3_SSE:-}
+      - MOTET_LOG_LEVEL=DEBUG
+      - MOTET_WORKER_DISCOVERY_ENABLED=true
+      - MOTET_MESSAGE_BUS_TYPE=redis
+      - MOTET_TRACE_ENABLED=true
+      - MOTET_ALLOW_INSECURE_PRINCIPAL_HEADERS=false  # Allow X-Principal-Id for dev/testing
+      # JWT Authentication (Keycloak)
+      - MOTET_JWT_JWKS_URL=http://keycloak:8080/realms/motet/protocol/openid-connect/certs
+      - MOTET_JWT_ISSUER=http://localhost:8080/realms/motet
+      - MOTET_JWT_AUDIENCE=motet-ai-stack
+      - MOTET_KEYCLOAK_CLIENT_ID=motet-ai-stack
+      - MOTET_KEYCLOAK_PUBLIC_URL=${KEYCLOAK_PUBLIC_URL:-http://localhost:8080}
+      - MOTET_JWT_SUB_CLAIM=sub
+      - MOTET_JWT_ROLES_CLAIM=roles
+      - MOTET_JWT_TENANT_CLAIMS=tenant_id,tid,org_id
+      - MOTET_JWT_ORGANIZATION_CLAIM=organization
+      - MOTET_JWT_JWKS_CACHE_TTL_SECONDS=300
+      - MOTET_JWT_ALG_ALLOWLIST=RS256
+      # Tenant Mapping Configuration
+      # Maps Keycloak org hierarchy paths (or custom claims) to canonical Motet tenant IDs
+      # Format: JSON object or comma-separated key=value pairs
+      # Example: {"170623370441471201":"acme","170623370441471202":"globex"}
+      - MOTET_TENANT_ID_MAP_JSON=${MOTET_TENANT_ID_MAP_JSON:-{"348265233845911556":"acme"}}
+      # Global tenant IDs that are allowed to operate in cross-tenant mode
+      # Format: JSON array or comma-separated list
+      # Example: ["motet-global"]
+      - MOTET_TENANT_GLOBAL_IDS=${MOTET_TENANT_GLOBAL_IDS:-}
+      # MCP auto-discovery: configure MCP servers via mcp_instance_manager.yaml (single source of truth)
+      - MOTET_MCP_ENABLED=true
+      # ADR-0105 §R2: MCP manager runs as the sibling ``mcp-manager``
+      # service. The API process doesn't run the watcher (that's celery-only),
+      # but any in-API MotetMCPClient call routes on the manager-keyed prefix.
+      - MOTET_MCP_MANAGER_ENDPOINT=mcp-manager
+      - MOTET_MCP_MANAGER_ID=mcp-local-default
+      - DISPLAY=:99
+      - MOTET_METRICS_ENABLED=true
+      - MOTET_EVENTS_BACKEND=celery
+      - CELERY_BROKER_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - CELERY_RESULT_BACKEND=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      # Pure Distributed Command Invoker Configuration
+      # State-Aware Routing Configuration
+      - MOTET_ROUTING_STRATEGY=hybrid
+      # Execution Tracking Configuration
+      - MOTET_EXECUTION_TRACKING_ENABLED=true
+      - MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - MOTET_DISTRIBUTED_INVOKER_NODE_TTL=300
+      - MOTET_DISTRIBUTED_INVOKER_HEARTBEAT_INTERVAL=60
+      - MOTET_MODEL_PROVIDER=openai
+      - MOTET_MODEL_NAME=gpt-4o-mini
+      # Model profiles (ADR-0064) - seed from config file at startup
+      - MOTET_ENABLE_MODEL_PROFILES=true
+      - MOTET_MODEL_PROFILE_NAME=default
+      - MOTET_SEED_MODEL_PROFILES_ON_STARTUP=true
+      - MOTET_MODEL_PROFILE_SEED_FILE=/app/config/model_profiles.yaml
+      - MOTET_MODEL_PROFILE_SEED_OVERWRITE=true
+      # Optional AVIF-to-JPEG normalization for model vision input.
+      # Review motet/core/media/README.md before enabling in distributed images.
+      - MOTET_ENABLE_AVIF_CONVERSION=1
+      # Canonical transcript storage/replay (impl-070)
+      - MOTET_STORE_CANONICAL_TRANSCRIPTS=true
+      # OpenAI-compatible facade (ADR-0125); off by default, enable via .env
+      - MOTET_OPENAI_COMPAT_ENABLED=${MOTET_OPENAI_COMPAT_ENABLED:-false}
+      - MOTET_OPENAI_COMPAT_PREFIX=${MOTET_OPENAI_COMPAT_PREFIX:-/v1}
+      - MOTET_OPENAI_COMPAT_DEFAULT_MODE=${MOTET_OPENAI_COMPAT_DEFAULT_MODE:-passthrough}
+      - MOTET_OPENAI_COMPAT_DEFAULT_ALLOWED_MODELS=${MOTET_OPENAI_COMPAT_DEFAULT_ALLOWED_MODELS:-}
+      - MOTET_OPENAI_COMPAT_DEFAULT_AGENT_ID=${MOTET_OPENAI_COMPAT_DEFAULT_AGENT_ID:-}
+      - MOTET_OPENAI_COMPAT_AGENT_CLIENT_TOOLS=${MOTET_OPENAI_COMPAT_AGENT_CLIENT_TOOLS:-true}
+      - MOTET_OPENAI_COMPAT_HOSTED_TOOLS_ALLOWLIST=${MOTET_OPENAI_COMPAT_HOSTED_TOOLS_ALLOWLIST:-}
+      - MOTET_OPENAI_COMPAT_ALLOW_REQUEST_MODE_OVERRIDE=${MOTET_OPENAI_COMPAT_ALLOW_REQUEST_MODE_OVERRIDE:-false}
+      - MOTET_OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MOTET_OPENAI_MODEL_NAME=gpt-4o-mini
+      # ADR-0113: default image-generation model (text default cannot generate images)
+      - MOTET_IMAGE_MODEL_PROVIDER=openai
+      - MOTET_IMAGE_MODEL_NAME=gpt-image-1
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MOTET_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - MOTET_XAI_API_KEY=${XAI_API_KEY:-}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - MOTET_META_API_KEY=${MOTET_META_API_KEY:-${MODEL_API_KEY:-}}
+      - META_API_KEY=${META_API_KEY:-${MODEL_API_KEY:-}}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - MOTET_MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOTET_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # Google Workspace OAuth: credentials stored in Vault (ADR-0057)
+      # Monitoring and Admin URLs (MOTET_FLOWER_URL optional; leave unset if not running Flower)
+      - MOTET_FLOWER_URL=
+      - MOTET_PGADMIN_URL=http://localhost:5050/
+      # Debug Mode Configuration for Task Flow Visualization
+      - MOTET_DEBUG_MODE=true
+      - MOTET_DEBUG_COMMAND_DATA_TTL=3600
+      - MOTET_DEBUG_API_ENABLED=true
+      - MOTET_COMMAND_FLOW_TRACKING=true
+      - MOTET_COMMAND_TRIGGER_TRACKING=true
+      # core.worker_exec allowlist (API local fallback when invoker falls back)
+      - MOTET_WORKER_EXEC_CWD_ALLOWLIST=/var/motet/worker-exec
+      - MOTET_WORKER_EXEC_DOCKER_HOST_CWD_ROOT=${MOTET_WORKER_EXEC_HOST_ROOT:-${PWD}/.motet/worker-exec}
+      - MOTET_EXEC_BACKEND=docker
+      - MOTET_IMAGE_STACK_PYTHON_OFFICE=${MOTET_IMAGE_STACK_PYTHON_OFFICE:-}
+      # Dev-only Vite proxy for Ant Design X prototype (HMR via same-origin)
+      # When using Docker, leave these unset so the API proxies to the vite-dev/vite-admin containers.
+      - MOTET_DEV_VITE_PROXY=${MOTET_DEV_VITE_PROXY:-true}
+      - MOTET_DEV_VITE_TARGET=${MOTET_DEV_VITE_TARGET:-http://vite-dev:5173}
+      # Admin Dashboard Vite Dev Server (ADR-0066); use vite-admin:5174 in Docker (not localhost)
+      - MOTET_DEV_ADMIN_VITE_TARGET=${MOTET_DEV_ADMIN_VITE_TARGET:-http://vite-admin:5174}
+      # Vault Configuration
+      - MOTET_VAULT_ENABLED=true
+      - MOTET_VAULT_MASTER_KEY=docker-dev-master-key-change-in-production
+      # WireGuard local device registration (ADR-0095)
+      # Public key is read from the auto-generated file in the mounted volume.
+      # Production: set MOTET_WIREGUARD_SERVER_PUBLIC_KEY and MOTET_WIREGUARD_VALKEY_URL directly.
+      - MOTET_WIREGUARD_SERVER_ENDPOINT=${MOTET_WG_SERVER_URL:-host.docker.internal}:${MOTET_WG_SERVER_PORT:-51820}
+      - MOTET_WIREGUARD_SERVER_PUBLICKEY_FILE=/config/wg_server/server/publickey-server
+      - MOTET_WIREGUARD_VALKEY_URL=redis://172.28.0.10:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+      wireguard-server:
+        condition: service_healthy
+      # Do not block on migrator/vault-init so API starts quickly; /manage and /chat-explorer proxy work immediately.
+      # Migrator and vault-init run in parallel; DB/vault features work once they complete.
+      # Keycloak not required for API startup - JWT works once Keycloak is up.
+      # zitadel-init is optional - API can start without it (JWT will fail until project/app is created)
+      # zitadel-init:
+      #   condition: service_completed_successfully
+    volumes:
+      - .:/app
+      - ./traces:/app/traces
+      - ./logs:/app/logs
+      # Separate Playwright browser caches per service to avoid concurrent install races on a shared volume.
+      - playwright_browsers_api:/tmp/playwright-browsers
+      - ./tls:/tls:ro
+      - wireguard_config:/config/wg_server:ro
+      - ${MOTET_PLUGIN_HOST_ROOT:-./.motet/imf_bundles}/api:/tmp/imf_bundles
+      - ${MOTET_WORKER_EXEC_HOST_ROOT:-./.motet/worker-exec}:/var/motet/worker-exec
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Vite Dev Server - Frontend Development Server
+  vite-dev:
+    logging: *default-logging
+    build:
+      context: .
+      dockerfile: docker/images/vite-dev/Dockerfile
+    # Ensure dependencies are always installed inside the container volume (prevents "Could not resolve"
+    # peer deps like `mermaid` when the bind mount hides image-layer node_modules).
+    # Also clear Vite optimize cache to avoid stale `.vite/deps/*` chunk errors on restarts.
+    command: sh -c "npm ci && rm -rf node_modules/.vite && npm run dev -- --host --port 5173"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./motet/interfaces/frontend/apps/chat-explorer:/app
+      # Mount the shared package so @motet/ui-common path alias works
+      - ./motet/interfaces/frontend/packages:/packages
+      # Keep dependencies in a named volume so they persist across container recreates.
+      - vite_dev_node_modules:/app/node_modules
+      # Optional: speed up repeated installs.
+      - vite_dev_npm_cache:/root/.npm
+    environment:
+      - NODE_ENV=development
+      - VITE_API_TARGET=http://motet-api:8000
+    networks:
+      - motet_dev
+    restart: unless-stopped
+    healthcheck:
+      # Vite is served under base `/chat-explorer/`, so check that path.
+      # start_period allows time for npm ci + dev server to start (can take 1–2 min)
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5173/chat-explorer/', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  # Vite Dev Server - Admin Dashboard (ADR-0066)
+  vite-admin:
+    logging: *default-logging
+    build:
+      context: .
+      dockerfile: docker/images/vite-admin/Dockerfile
+    command: sh -c "npm install && rm -rf node_modules/.vite && npm run dev -- --host --port 5174"
+    ports:
+      - "5174:5174"
+    volumes:
+      - ./motet/interfaces/frontend/apps/ops-dashboard:/app
+      # Mount the shared package so @motet/ui-common path alias works
+      - ./motet/interfaces/frontend/packages:/packages
+      # Keep dependencies in a named volume so they persist across container recreates.
+      - vite_admin_node_modules:/app/node_modules
+      # Optional: speed up repeated installs.
+      - vite_admin_npm_cache:/root/.npm
+    environment:
+      - NODE_ENV=development
+      - VITE_API_TARGET=http://motet-api:8000
+    networks:
+      - motet_dev
+    restart: unless-stopped
+    healthcheck:
+      # start_period allows time for npm install + dev server to start (can take 1–2 min)
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5174/manage/', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  # Worker 1 for Distributed Processing (with embedded MCPInstanceManager)
+  worker-1:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/worker/Dockerfile
+      args:
+        # ADR-0118: Whisper CLI for video transcripts (heavy: pulls CPU torch).
+        # Set MOTET_WORKER_INSTALL_WHISPER=0 to build the lean worker image.
+        - INSTALL_WHISPER=${MOTET_WORKER_INSTALL_WHISPER:-1}
+    command: >
+      bash -c "
+        echo 'Starting Celery Worker 1 with 1000 concurrent operations and embedded MCPInstanceManager...';
+        exec celery -A motet.core.workers.tasks worker --loglevel=info --pool=gevent --concurrency=1000  --hostname=worker1@%h --queues=default,worker_management,event_delivery,command_processing,worker.cloud_worker1
+      "
+    ports:
+      - "9100:9090"  # Worker 1 metrics endpoint (host 9100 -> container 9090)
+      - "9101:9091"  # Worker 1 health endpoint (host 9101 -> container 9091)
+    environment:
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      - MOTET_EVENTS_BACKEND=celery
+      - MOTET_POSTGRES_URL=postgresql://motet:motet_dev_password@postgres:5432/motet_distributed
+      # Memory Configuration
+      - MOTET_ENABLE_MEMORY=true
+      - MOTET_MEMORY_BACKEND=redis
+      # LTM semantic search: Valkey Search + async embed dispatch (ADR-0092)
+      - MOTET_ENABLE_VECTOR_MEMORY=true
+      - MOTET_STORE_ASSISTANT_VECTOR=true
+      - MOTET_MEMORY_AGENT_SCOPE_MODE=prefer
+      # ADR-0124 prompt-cache prefix diagnostics. Off unless exported in the shell:
+      # MOTET_PROMPT_CACHE_PROBE=true motet-cli local up -d worker-1 worker-2
+      - MOTET_PROMPT_CACHE_PROBE=${MOTET_PROMPT_CACHE_PROBE:-false}
+      # ADR-0063: text artifact RAG indexing/retrieval for upload context.
+      - MOTET_ARTIFACT_RAG_ENABLED=true
+      - MOTET_ARTIFACT_RAG_INDEX_ON_DERIVATION=true
+      - MOTET_ARTIFACT_RAG_HYBRID_ENABLED=true
+      - MOTET_ARTIFACT_RAG_NATIVE_TEXT_MODE=auto
+      - MOTET_ARTIFACT_RAG_TOP_K=5
+      - MOTET_ARTIFACT_RAG_SIMILARITY_THRESHOLD=0.0
+      - MOTET_ARTIFACT_RAG_TOKEN_BUDGET=4000
+      # Artifact payload store: SeaweedFS S3 (local). Redis keeps metadata/indexes.
+      - MOTET_ARTIFACT_STORE_BACKEND=${MOTET_ARTIFACT_STORE_BACKEND:-s3}
+      - MOTET_ARTIFACT_STORE_S3_BUCKET=${MOTET_ARTIFACT_STORE_S3_BUCKET:-motet-artifacts}
+      - MOTET_ARTIFACT_STORE_S3_PREFIX=${MOTET_ARTIFACT_STORE_S3_PREFIX:-artifacts}
+      - MOTET_ARTIFACT_STORE_S3_ENDPOINT_URL=${MOTET_ARTIFACT_STORE_S3_ENDPOINT_URL:-http://seaweedfs:8333}
+      - MOTET_ARTIFACT_STORE_S3_REGION=${MOTET_ARTIFACT_STORE_S3_REGION:-us-east-1}
+      - MOTET_ARTIFACT_STORE_S3_ACCESS_KEY_ID=${MOTET_ARTIFACT_STORE_S3_ACCESS_KEY_ID:-motet-dev}
+      - MOTET_ARTIFACT_STORE_S3_SECRET_ACCESS_KEY=${MOTET_ARTIFACT_STORE_S3_SECRET_ACCESS_KEY:-motet-dev-secret}
+      - MOTET_ARTIFACT_STORE_S3_FORCE_PATH_STYLE=${MOTET_ARTIFACT_STORE_S3_FORCE_PATH_STYLE:-true}
+      - MOTET_ARTIFACT_STORE_S3_USE_SSL=${MOTET_ARTIFACT_STORE_S3_USE_SSL:-false}
+      - MOTET_ARTIFACT_STORE_S3_SSE=${MOTET_ARTIFACT_STORE_S3_SSE:-}
+      # ADR-0119: video transcript backend — openai_api (default; needs OPENAI_API_KEY,
+      # sends audio to OpenAI), whisper_cli (in-worker, requires INSTALL_WHISPER=1
+      # image build), or none. Skips to keyframes-only when unavailable.
+      - MOTET_VIDEO_TRANSCRIPTION_BACKEND=${MOTET_VIDEO_TRANSCRIPTION_BACKEND:-openai_api}
+      # ADR-0119: hosted model id. gpt-4o-transcribe-diarize adds free speaker
+      # labels (same ~$0.006/min) — best for field intake/provenance clips.
+      # whisper-1 / gpt-4o-transcribe drop diarization. Local (whisper_cli) uses
+      # model names like base/small/medium.
+      - MOTET_VIDEO_TRANSCRIPTION_MODEL=${MOTET_VIDEO_TRANSCRIPTION_MODEL:-gpt-4o-transcribe-diarize}
+      # ADR-0107 sibling embedding server.
+      - MOTET_EMBEDDING_TOPOLOGY=sibling
+      - MOTET_EMBEDDING_ENDPOINT=http://embedding-server:8091
+      - MOTET_EMBEDDING_REQUEST_TIMEOUT_SECONDS=10
+      - MOTET_EMBEDDING_REQUEST_MAX_ATTEMPTS=3
+      - MOTET_EMBEDDING_RETRY_BACKOFF_SECONDS=0.25
+      - MOTET_EMBEDDING_CIRCUIT_BREAKER_FAILURE_THRESHOLD=3
+      - MOTET_EMBEDDING_CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECONDS=30
+      # Tool Observation Persistence (formatted + capped tool observations for cross-turn context rebuild)
+      - MOTET_STORE_TOOL_OBSERVATIONS=true
+      - MOTET_TOOL_OBSERVATION_MAX_BYTES=2048
+      - MOTET_MODEL_PROVIDER=openai
+      - MOTET_MODEL_NAME=gpt-4o-mini
+      # Model profiles (ADR-0064) - seed from config file at startup
+      - MOTET_ENABLE_MODEL_PROFILES=true
+      - MOTET_MODEL_PROFILE_NAME=default
+      - MOTET_SEED_MODEL_PROFILES_ON_STARTUP=true
+      - MOTET_MODEL_PROFILE_SEED_FILE=/app/config/model_profiles.yaml
+      - MOTET_MODEL_PROFILE_SEED_OVERWRITE=true
+      # Optional AVIF-to-JPEG normalization for model vision input.
+      # Review motet/core/media/README.md before enabling in distributed images.
+      - MOTET_ENABLE_AVIF_CONVERSION=1
+      # Canonical transcript storage/replay (impl-070)
+      - MOTET_STORE_CANONICAL_TRANSCRIPTS=true
+      # PDF OCR batching (MapCommand via motet.apply in derive_upload_text)
+      # Set to 4 for testing; override as needed.
+      - MOTET_PDF_OCR_BATCH_SIZE=8
+      # PDF page rasterization backend (derive_pdf_page_images)
+      # Prefer PDFium (more permissive license) with fallback to Poppler.
+      - MOTET_PDF_PAGE_IMAGE_RENDERER=pdfium
+      - MOTET_OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MOTET_OPENAI_MODEL_NAME=gpt-4o-mini
+      # ADR-0113: default image-generation model (text default cannot generate images)
+      - MOTET_IMAGE_MODEL_PROVIDER=openai
+      - MOTET_IMAGE_MODEL_NAME=gpt-image-1
+      # MCP auto-discovery: configure MCP servers via mcp_instance_manager.yaml (single source of truth)
+      - MOTET_MCP_ENABLED=true
+      # ADR-0105 §R0/§R2 (2026-04-20): MCP manager runs as the sibling
+      # ``mcp-manager`` compose service. Endpoint is the discovery hint
+      # (compose service DNS); manager_id is the bus-routing prefix on Redis
+      # Streams / PUB-SUB / readiness sets that this worker shares with the
+      # manager. Both must be set when MOTET_MCP_ENABLED=true or the worker
+      # hard-fails at startup.
+      - MOTET_MCP_MANAGER_ENDPOINT=mcp-manager
+      - MOTET_MCP_MANAGER_ID=mcp-local-default
+      - MOTET_MCP_WATCHER_DISCOVERY_MAX_WORKERS=1
+      # Docker MCP cold start (pull, Playwright, npx) must finish before service_ready; default 240s in code
+      - MOTET_MCP_PER_SERVICE_INIT_TIMEOUT_SECONDS=240
+      # Stdio MCP: seconds per stdout read while waiting for initialize response (default 120 in code)
+      - MOTET_MCP_INITIALIZE_TIMEOUT_SECONDS=180
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MOTET_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - MOTET_XAI_API_KEY=${XAI_API_KEY:-}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - MOTET_META_API_KEY=${MOTET_META_API_KEY:-${MODEL_API_KEY:-}}
+      - META_API_KEY=${META_API_KEY:-${MODEL_API_KEY:-}}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - MOTET_MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOTET_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # Google Workspace OAuth: credentials stored in Vault (ADR-0057)
+      # - User tokens: obtained via /api/v1/oauth/google_workspace/initiate flow
+      # - Client credentials: stored in vault as google_workspace:oauth:client_credentials
+      - CELERY_BROKER_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - CELERY_RESULT_BACKEND=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      # Pure Distributed Command Invoker Configuration
+      # State-Aware Routing Configuration
+      - MOTET_ROUTING_STRATEGY=hybrid
+      # Execution Tracking Configuration
+      - MOTET_EXECUTION_TRACKING_ENABLED=true
+      - MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - MOTET_DISTRIBUTED_INVOKER_NODE_TTL=300
+      - MOTET_DISTRIBUTED_INVOKER_HEARTBEAT_INTERVAL=60
+      # Worker identification
+      - MOTET_WORKER_ID=worker1
+      # core.worker_exec: allowed cwd prefixes inside this container (0700 dir in image)
+      - MOTET_WORKER_EXEC_CWD_ALLOWLIST=/var/motet/worker-exec
+      - MOTET_WORKER_EXEC_DOCKER_HOST_CWD_ROOT=${MOTET_WORKER_EXEC_HOST_ROOT:-${PWD}/.motet/worker-exec}
+      - MOTET_EXEC_BACKEND=docker
+      - MOTET_IMAGE_STACK_PYTHON_OFFICE=${MOTET_IMAGE_STACK_PYTHON_OFFICE:-}
+      # MCP: docker = stdio MCP servers in Engine API sidecars (exec_image in mcp_instance_manager.yaml).
+      - MOTET_MCP_EXEC_BACKEND=docker
+      # MCP Docker sidecars: slim Node image (worker no longer bakes HF/torch after ADR-0107 M3).
+      # Slim Node for MCP sidecars (npx MCP servers); not the full worker image.
+      - MOTET_MCP_DOCKER_IMAGE=node:20-bookworm-slim
+      # Debug Mode Configuration for Task Flow Visualization
+      - MOTET_DEBUG_MODE=true
+      - MOTET_DEBUG_COMMAND_DATA_TTL=3600
+      - MOTET_COMMAND_FLOW_TRACKING=true
+      - MOTET_COMMAND_TRIGGER_TRACKING=true
+      # Vault Configuration
+      - MOTET_VAULT_ENABLED=true
+      - MOTET_VAULT_MASTER_KEY=docker-dev-master-key-change-in-production
+      # MCP Instance Manager Configuration (Per-Worker)
+      - MCP_INSTANCE_MANAGER_CONFIG=/app/config/mcp_instance_manager.yaml
+      # MCP stream encryption: purge streams on KEK mismatch (e.g. after Redis flush / new tenant KEK)
+      - MOTET_MCP_PURGE_ON_KEK_MISMATCH=true
+      # Function Discovery Vector Store Configuration
+      - MOTET_FORCE_REINDEX_FUNCTIONS=${MOTET_FORCE_REINDEX_FUNCTIONS:-false}
+      # Legacy Hugging Face cache paths (mostly unused on workers after ADR-0107 M3).
+      # Text embeddings use embedding-server; set HF_* offline only if you add torch/transformers via a custom layer.
+      - HF_HOME=/opt/imf_hf_cache
+      - TRANSFORMERS_CACHE=/opt/imf_hf_cache/transformers
+      - SENTENCE_TRANSFORMERS_HOME=/opt/imf_hf_cache/sentence_transformers
+      - HF_TOKEN=${HF_TOKEN:-}
+      # Offline mode: workers no longer ship ST/torch by default; embedding-server still bakes models offline.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      seaweedfs:
+        condition: service_healthy
+      # ADR-0105: wait for the sibling MCP manager to be healthy so our watcher
+      # has something to subscribe to (avoids a startup race where the worker's
+      # initial catchup against the durable readiness set finds nothing).
+      mcp-manager:
+        condition: service_healthy
+      embedding-server:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      # Text embedding model weights live in embedding-server; workers are slim after ADR-0107 M3.
+      # Separate Playwright browser caches per service to avoid concurrent install races on a shared volume.
+      - playwright_browsers_worker1:/tmp/playwright-browsers
+      - ./tls:/tls:ro
+      - ${MOTET_PLUGIN_HOST_ROOT:-./.motet/imf_bundles}/worker-1:/tmp/imf_bundles
+      - ${MOTET_WORKER_EXEC_HOST_ROOT:-./.motet/worker-exec}:/var/motet/worker-exec
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Worker 2 for Distributed Processing (with embedded MCPInstanceManager and optional local inference - ADR-0042)
+  worker-2:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/worker/Dockerfile
+      args:
+        # ADR-0118: Whisper CLI for video transcripts (heavy: pulls CPU torch).
+        - INSTALL_WHISPER=${MOTET_WORKER_INSTALL_WHISPER:-1}
+    command: >
+      bash -c '
+        echo "Starting Celery Worker 2 with 1000 concurrent operations and embedded MCPInstanceManager...";
+        if [ "$$MOTET_LOCAL_INFERENCE_ENABLED" = "true" ] || [ "$$MOTET_GPU_ENABLED" = "true" ]; then
+          echo "🎮 Local inference enabled - checking hardware availability...";
+          nvidia-smi || echo "⚠️  nvidia-smi not available (will use CPU/Apple Silicon if available)";
+        fi;
+        exec celery -A motet.core.workers.tasks worker --loglevel=info --pool=gevent --concurrency=1000 --hostname=worker2@%h --queues=default,worker_management,event_delivery,command_processing,worker.cloud_worker2
+      '
+    ports:
+      - "9102:9092"  # Worker 2 metrics endpoint (host 9102 -> container 9092)
+      - "9103:9093"  # Worker 2 health endpoint (host 9103 -> container 9093)
+    environment:
+      # Local Inference Configuration (ADR-0042) - ENABLED for testing
+      # Works on CPU, NVIDIA GPUs, and Apple Silicon (Metal)
+      #
+      # ADR-0105 (LocalInferenceManager hoist): the worker no longer spawns the manager
+      # subprocess. It only builds the in-worker LocalInferenceClient and routes requests
+      # to the sibling ``local-inference`` service over Redis Streams keyed by
+      # MOTET_LOCAL_INFERENCE_MANAGER_ID. The inference-pool sizing knobs
+      # (MOTET_GPU_WORKER_COUNT / DEVICE_IDS / MAX_MEMORY_GB / MODEL_CACHE_SIZE /
+      # BATCH_*) now live on the ``local-inference`` service, not here.
+      - MOTET_LOCAL_INFERENCE_ENABLED=true     # Build the local inference client in this worker
+      - MOTET_LOCAL_INFERENCE_MANAGER_ID=local-inference-default  # Shared bus-routing prefix (ADR-0105 §R2)
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      - MOTET_EVENTS_BACKEND=celery
+      - MOTET_POSTGRES_URL=postgresql://motet:motet_dev_password@postgres:5432/motet_distributed
+      # Memory Configuration
+      - MOTET_ENABLE_MEMORY=true
+      - MOTET_MEMORY_BACKEND=redis
+      # LTM semantic search: Valkey Search + async embed dispatch (ADR-0092)
+      - MOTET_ENABLE_VECTOR_MEMORY=true
+      - MOTET_STORE_ASSISTANT_VECTOR=true
+      - MOTET_MEMORY_AGENT_SCOPE_MODE=prefer
+      # ADR-0124 prompt-cache prefix diagnostics. Off unless exported in the shell:
+      # MOTET_PROMPT_CACHE_PROBE=true motet-cli local up -d worker-1 worker-2
+      - MOTET_PROMPT_CACHE_PROBE=${MOTET_PROMPT_CACHE_PROBE:-false}
+      # ADR-0063: text artifact RAG indexing/retrieval for upload context.
+      - MOTET_ARTIFACT_RAG_ENABLED=true
+      - MOTET_ARTIFACT_RAG_INDEX_ON_DERIVATION=true
+      - MOTET_ARTIFACT_RAG_HYBRID_ENABLED=true
+      - MOTET_ARTIFACT_RAG_NATIVE_TEXT_MODE=auto
+      - MOTET_ARTIFACT_RAG_TOP_K=5
+      - MOTET_ARTIFACT_RAG_SIMILARITY_THRESHOLD=0.0
+      - MOTET_ARTIFACT_RAG_TOKEN_BUDGET=4000
+      # Artifact payload store: SeaweedFS S3 (local). Redis keeps metadata/indexes.
+      - MOTET_ARTIFACT_STORE_BACKEND=${MOTET_ARTIFACT_STORE_BACKEND:-s3}
+      - MOTET_ARTIFACT_STORE_S3_BUCKET=${MOTET_ARTIFACT_STORE_S3_BUCKET:-motet-artifacts}
+      - MOTET_ARTIFACT_STORE_S3_PREFIX=${MOTET_ARTIFACT_STORE_S3_PREFIX:-artifacts}
+      - MOTET_ARTIFACT_STORE_S3_ENDPOINT_URL=${MOTET_ARTIFACT_STORE_S3_ENDPOINT_URL:-http://seaweedfs:8333}
+      - MOTET_ARTIFACT_STORE_S3_REGION=${MOTET_ARTIFACT_STORE_S3_REGION:-us-east-1}
+      - MOTET_ARTIFACT_STORE_S3_ACCESS_KEY_ID=${MOTET_ARTIFACT_STORE_S3_ACCESS_KEY_ID:-motet-dev}
+      - MOTET_ARTIFACT_STORE_S3_SECRET_ACCESS_KEY=${MOTET_ARTIFACT_STORE_S3_SECRET_ACCESS_KEY:-motet-dev-secret}
+      - MOTET_ARTIFACT_STORE_S3_FORCE_PATH_STYLE=${MOTET_ARTIFACT_STORE_S3_FORCE_PATH_STYLE:-true}
+      - MOTET_ARTIFACT_STORE_S3_USE_SSL=${MOTET_ARTIFACT_STORE_S3_USE_SSL:-false}
+      - MOTET_ARTIFACT_STORE_S3_SSE=${MOTET_ARTIFACT_STORE_S3_SSE:-}
+      # ADR-0119: video transcript backend — openai_api (default; needs OPENAI_API_KEY,
+      # sends audio to OpenAI), whisper_cli (in-worker, requires INSTALL_WHISPER=1
+      # image build), or none. Skips to keyframes-only when unavailable.
+      - MOTET_VIDEO_TRANSCRIPTION_BACKEND=${MOTET_VIDEO_TRANSCRIPTION_BACKEND:-openai_api}
+      # ADR-0119: hosted model id. gpt-4o-transcribe-diarize adds free speaker
+      # labels (same ~$0.006/min) — best for field intake/provenance clips.
+      # whisper-1 / gpt-4o-transcribe drop diarization. Local (whisper_cli) uses
+      # model names like base/small/medium.
+      - MOTET_VIDEO_TRANSCRIPTION_MODEL=${MOTET_VIDEO_TRANSCRIPTION_MODEL:-gpt-4o-transcribe-diarize}
+      # ADR-0107 sibling embedding server.
+      - MOTET_EMBEDDING_TOPOLOGY=sibling
+      - MOTET_EMBEDDING_ENDPOINT=http://embedding-server:8091
+      - MOTET_EMBEDDING_REQUEST_TIMEOUT_SECONDS=10
+      - MOTET_EMBEDDING_REQUEST_MAX_ATTEMPTS=3
+      - MOTET_EMBEDDING_RETRY_BACKOFF_SECONDS=0.25
+      - MOTET_EMBEDDING_CIRCUIT_BREAKER_FAILURE_THRESHOLD=3
+      - MOTET_EMBEDDING_CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECONDS=30
+      # Tool Observation Persistence (formatted + capped tool observations for cross-turn context rebuild)
+      - MOTET_STORE_TOOL_OBSERVATIONS=true
+      - MOTET_TOOL_OBSERVATION_MAX_BYTES=2048
+      - MOTET_MODEL_PROVIDER=openai
+      - MOTET_MODEL_NAME=gpt-4o-mini
+      # Model profiles (ADR-0064) - seed from config file at startup
+      - MOTET_ENABLE_MODEL_PROFILES=true
+      - MOTET_MODEL_PROFILE_NAME=default
+      - MOTET_SEED_MODEL_PROFILES_ON_STARTUP=true
+      - MOTET_MODEL_PROFILE_SEED_FILE=/app/config/model_profiles.yaml
+      - MOTET_MODEL_PROFILE_SEED_OVERWRITE=true
+      # Optional AVIF-to-JPEG normalization for model vision input.
+      # Review motet/core/media/README.md before enabling in distributed images.
+      - MOTET_ENABLE_AVIF_CONVERSION=1
+      # Canonical transcript storage/replay (impl-070)
+      - MOTET_STORE_CANONICAL_TRANSCRIPTS=true
+      # PDF OCR batching (MapCommand via motet.apply in derive_upload_text)
+      # Set to 4 for testing; override as needed.
+      - MOTET_PDF_OCR_BATCH_SIZE=8
+      # PDF page rasterization backend (derive_pdf_page_images)
+      # Prefer PDFium (more permissive license) with fallback to Poppler.
+      - MOTET_PDF_PAGE_IMAGE_RENDERER=pdfium
+      - MOTET_OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MOTET_OPENAI_MODEL_NAME=gpt-4o-mini
+      # ADR-0113: default image-generation model (text default cannot generate images)
+      - MOTET_IMAGE_MODEL_PROVIDER=openai
+      - MOTET_IMAGE_MODEL_NAME=gpt-image-1
+      # MCP auto-discovery: configure MCP servers via mcp_instance_manager.yaml (single source of truth)
+      - MOTET_MCP_ENABLED=true
+      # ADR-0105 §R0/§R2 (2026-04-20): MCP manager is the sibling
+      # ``mcp-manager`` compose service. See worker-1 for full notes.
+      - MOTET_MCP_MANAGER_ENDPOINT=mcp-manager
+      - MOTET_MCP_MANAGER_ID=mcp-local-default
+      - MOTET_MCP_WATCHER_DISCOVERY_MAX_WORKERS=1
+      - MOTET_MCP_PER_SERVICE_INIT_TIMEOUT_SECONDS=240
+      - MOTET_MCP_INITIALIZE_TIMEOUT_SECONDS=180
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MOTET_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - MOTET_XAI_API_KEY=${XAI_API_KEY:-}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - MOTET_META_API_KEY=${MOTET_META_API_KEY:-${MODEL_API_KEY:-}}
+      - META_API_KEY=${META_API_KEY:-${MODEL_API_KEY:-}}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - MOTET_MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOTET_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # Google Workspace OAuth: credentials stored in Vault (ADR-0057)
+      - CELERY_BROKER_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - CELERY_RESULT_BACKEND=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      # Pure Distributed Command Invoker Configuration
+      # State-Aware Routing Configuration
+      - MOTET_ROUTING_STRATEGY=hybrid
+      # Execution Tracking Configuration
+      - MOTET_EXECUTION_TRACKING_ENABLED=true
+      - MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - MOTET_DISTRIBUTED_INVOKER_NODE_TTL=300
+      - MOTET_DISTRIBUTED_INVOKER_HEARTBEAT_INTERVAL=60
+      # Worker identification
+      - MOTET_WORKER_ID=worker2
+      # core.worker_exec: allowed cwd prefixes inside this container (0700 dir in image)
+      - MOTET_WORKER_EXEC_CWD_ALLOWLIST=/var/motet/worker-exec
+      - MOTET_WORKER_EXEC_DOCKER_HOST_CWD_ROOT=${MOTET_WORKER_EXEC_HOST_ROOT:-${PWD}/.motet/worker-exec}
+      - MOTET_EXEC_BACKEND=docker
+      - MOTET_IMAGE_STACK_PYTHON_OFFICE=${MOTET_IMAGE_STACK_PYTHON_OFFICE:-}
+      # MCP: docker = stdio MCP servers in Engine API sidecars (exec_image in mcp_instance_manager.yaml).
+      - MOTET_MCP_EXEC_BACKEND=docker
+      # MCP Docker sidecars: slim Node image (worker no longer bakes HF/torch after ADR-0107 M3)
+      - MOTET_MCP_DOCKER_IMAGE=node:20-bookworm-slim
+      # Debug Mode Configuration for Task Flow Visualization
+      - MOTET_DEBUG_MODE=true
+      - MOTET_DEBUG_COMMAND_DATA_TTL=3600
+      - MOTET_COMMAND_FLOW_TRACKING=true
+      - MOTET_COMMAND_TRIGGER_TRACKING=true
+      # Vault Configuration
+      - MOTET_VAULT_ENABLED=true
+      - MOTET_VAULT_MASTER_KEY=docker-dev-master-key-change-in-production
+      # MCP Instance Manager Configuration (Per-Worker)
+      - MCP_INSTANCE_MANAGER_CONFIG=/app/config/mcp_instance_manager.yaml
+      # MCP stream encryption: purge streams on KEK mismatch (e.g. after Redis flush / new tenant KEK)
+      - MOTET_MCP_PURGE_ON_KEK_MISMATCH=true
+      # Function Discovery Vector Store Configuration
+      - MOTET_FORCE_REINDEX_FUNCTIONS=${MOTET_FORCE_REINDEX_FUNCTIONS:-false}
+      # Legacy Hugging Face cache paths (mostly unused on workers after ADR-0107 M3).
+      # Text embeddings use embedding-server; set HF_* offline only if you add torch/transformers via a custom layer.
+      - HF_HOME=/opt/imf_hf_cache
+      - TRANSFORMERS_CACHE=/opt/imf_hf_cache/transformers
+      - SENTENCE_TRANSFORMERS_HOME=/opt/imf_hf_cache/sentence_transformers
+      - HF_TOKEN=${HF_TOKEN:-}
+      # Offline mode: workers no longer ship ST/torch by default; embedding-server still bakes models offline.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    
+    # Local Inference - GPU Support (ADR-0042) - Uncomment to enable NVIDIA GPU access
+    # Note: CPU and Apple Silicon work without this section (auto-detected)
+    # This section is ONLY needed for NVIDIA GPUs in Docker
+    # Requirements: NVIDIA GPU, NVIDIA drivers, and NVIDIA Container Toolkit
+    # Installation: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    # Verify GPU: docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+    # To enable: Uncomment deploy section below AND uncomment MOTET_LOCAL_INFERENCE_ENABLED in environment section above
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           device_ids: ['0', '1']  # Specify GPU device IDs (e.g., ['0', '1']) or use 'all' for all GPUs
+    #           capabilities: [gpu]
+    
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      seaweedfs:
+        condition: service_healthy
+      # ADR-0105: sibling MCP manager (shared with worker-1).
+      mcp-manager:
+        condition: service_healthy
+      # ADR-0105: sibling LocalInferenceManager. The worker's LocalInferenceClient
+      # publishes to this manager's Redis Streams; start it before the worker so the
+      # warm model cache is available. (Streams are durable, so this is best-effort
+      # ordering rather than a strict requirement.)
+      local-inference:
+        condition: service_started
+      embedding-server:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      # Text embedding model weights live in embedding-server; workers are slim after ADR-0107 M3.
+      # Separate Playwright browser caches per service to avoid concurrent install races on a shared volume.
+      - playwright_browsers_worker2:/tmp/playwright-browsers
+      - ./models:/app/models:ro  # Mount models directory (read-only) for local inference
+      - ./tls:/tls:ro
+      - ${MOTET_PLUGIN_HOST_ROOT:-./.motet/imf_bundles}/worker-2:/tmp/imf_bundles
+      - ${MOTET_WORKER_EXEC_HOST_ROOT:-./.motet/worker-exec}:/var/motet/worker-exec
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Worker Lifecycle Management - Dedicated service for worker start/stop/restart (uses worker_lifecycle image)
+  worker-lcm:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker-lifecycle:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/worker_lifecycle/Dockerfile
+    command: >
+      bash -c "
+        echo 'Starting Worker Lifecycle Management service...';
+        exec celery -A motet.core.workers.tasks worker --loglevel=info --pool=gevent --concurrency=4 --hostname=worker-lifecycle@%h --queues=worker_management,worker.cloud_lifecycle_management
+      "
+    environment:
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      - MOTET_EVENTS_BACKEND=celery
+      - MOTET_POSTGRES_URL=postgresql://motet:motet_dev_password@postgres:5432/motet_distributed
+      - MOTET_MODEL_PROVIDER=openai
+      - MOTET_MODEL_NAME=gpt-4o-mini
+      - MOTET_OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MOTET_OPENAI_MODEL_NAME=gpt-4o-mini
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - MOTET_MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOTET_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # ADR-0113: default image-generation model (text default cannot generate images)
+      - MOTET_IMAGE_MODEL_PROVIDER=openai
+      - MOTET_IMAGE_MODEL_NAME=gpt-image-1
+      - MOTET_MCP_ENABLED=false
+      - MOTET_MCP_WORKER_STARTUP=false
+      - CELERY_BROKER_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - CELERY_RESULT_BACKEND=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - MOTET_ROUTING_STRATEGY=hybrid
+      - MOTET_EXECUTION_TRACKING_ENABLED=true
+      - MOTET_PURE_DISTRIBUTED_INVOKER_REDIS_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - MOTET_DISTRIBUTED_INVOKER_NODE_TTL=300
+      - MOTET_DISTRIBUTED_INVOKER_HEARTBEAT_INTERVAL=60
+      - MOTET_WORKER_ID=lifecycle_management
+      - MOTET_WORKER_LIFECYCLE_WORKER_ID=lifecycle_management
+      # Bundle deploy capability (ADR-0071): redis artifact store
+      - MOTET_BUNDLE_STORE=redis
+      # ADR-0100 local exec-image builds: build bundle requirements into
+      # digest-pinned images and push them to the local dev registry.
+      - MOTET_DEPLOYER_BUILD_ENABLED=${MOTET_DEPLOYER_BUILD_ENABLED:-true}
+      - MOTET_DEPLOYER_BUILD_REGISTRY=${MOTET_DEPLOYER_BUILD_REGISTRY:-localhost:5050}
+      # Dev-only hot deploy guard for local bundle iteration
+      - MOTET_ENABLE_HOT_DEPLOY=true
+      - MOTET_DEBUG_MODE=true
+      - MOTET_VAULT_ENABLED=true
+      - MOTET_VAULT_MASTER_KEY=docker-dev-master-key-change-in-production
+      # MCP stream encryption: purge streams on KEK mismatch (e.g. after Redis flush / new tenant KEK)
+      - MOTET_MCP_PURGE_ON_KEK_MISMATCH=true
+      - MOTET_ENABLE_MODEL_PROFILES=false
+      # Optional HF cache paths (lifecycle image no longer preloads ST weights after ADR-0107 M3).
+      - HF_HOME=/opt/imf_hf_cache
+      - TRANSFORMERS_CACHE=/opt/imf_hf_cache/transformers
+      - SENTENCE_TRANSFORMERS_HOME=/opt/imf_hf_cache/sentence_transformers
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    volumes:
+      - .:/app
+      - ./tls:/tls:ro
+      - ${MOTET_PLUGIN_HOST_ROOT:-./.motet/imf_bundles}/worker-lcm:/tmp/imf_bundles
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+  # Scheduler - Periodic Task Scheduler (Celery beat)
+  scheduler:
+    logging: *default-logging
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/scheduler:${MOTET_IMAGE_TAG:-v0.1.0}
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/images/scheduler/Dockerfile
+    command: celery -A motet.core.workers.tasks beat --loglevel=info
+    environment:
+      - MOTET_REDIS_URL=rediss://redis-tls:6380/0
+      - MOTET_VALKEY_CLIENT=${MOTET_VALKEY_CLIENT:-redis}
+      - MOTET_REDIS_CA_CERT=/tls/ca.crt
+      - MOTET_REDIS_SSL_CERT_REQS=none
+      - MOTET_VAULT_MASTER_KEY=docker-dev-master-key-change-in-production
+      - CELERY_BROKER_URL=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+      - CELERY_RESULT_BACKEND=rediss://redis-tls:6380/0?ssl_cert_reqs=CERT_NONE
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-tls:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - ./tls:/tls:ro
+    networks:
+      - motet_dev
+    restart: unless-stopped
+
+
+
+  # WireGuard Server — local worker tunnel endpoint (ADR-0095)
+  #
+  # Allows local workers (running outside this Compose stack) to reach Valkey
+  # through a WireGuard tunnel. Peers are auto-generated; the local worker
+  # gets its config from the shared volume.
+  #
+  # To connect a local worker after the stack is up:
+  #
+  #   1. Copy peer config to local device WireGuard dir:
+  #      mkdir -p ~/.motet/devices/wg
+  #      docker cp motet_dev-wireguard-server-1:/config/peer_localworker/peer_localworker.conf \
+  #        ~/.motet/devices/wg/wg0.conf
+  #
+  #   2. Start local worker (redis is at 172.28.0.10 through the tunnel):
+  #      MOTET_VALKEY_URL=redis://172.28.0.10:6379/0 \
+  #      MOTET_EDGE_WORKER_ID=edge_devtest1 \
+  #        docker compose -f docker-compose.edge-worker.yml --profile edge up -d
+  #
+  # The WireGuard server does IP masquerading (NAT), so the local-worker's
+  # traffic appears to originate from wireguard-server on the motet_dev
+  # network. Redis is reachable via the tunnel at the server's IP.
+  wireguard-server:
+    logging: *default-logging
+    image: lscr.io/linuxserver/wireguard:latest
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      SERVERURL: ${MOTET_WG_SERVER_URL:-host.docker.internal}
+      SERVERPORT: ${MOTET_WG_SERVER_PORT:-51820}
+      PEERS: ${MOTET_WG_PEERS:-localworker}
+      INTERNAL_SUBNET: 10.13.13.0
+      ALLOWEDIPS: "10.13.13.0/24, 172.28.0.0/16"
+      PEERDNS: auto
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    ports:
+      - "${MOTET_WG_SERVER_PORT:-51820}:51820/udp"
+    volumes:
+      - wireguard_config:/config
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      motet_dev:
+        ipv4_address: 172.28.0.200
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wg", "show", "wg0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  vite_dev_node_modules:
+  vite_dev_npm_cache:
+  vite_admin_node_modules:
+  vite_admin_npm_cache:
+  redis_data:
+  postgres_data:
+  seaweedfs_data:
+  playwright_browsers_api:
+  playwright_browsers_worker1:
+  playwright_browsers_worker2:
+  keycloak_data:
+  pgadmin_data:
+  wireguard_config:
+  registry_data:
+
+networks:
+  # Compose key stays ``motet_dev`` for service attachments; explicit ``name``
+  # avoids the doubled default ``{project}_{key}`` → motet_dev_motet_dev.
+  motet_dev:
+    name: motet_dev_network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

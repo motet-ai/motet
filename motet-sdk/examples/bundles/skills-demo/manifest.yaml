@@ -1,0 +1,7 @@
+format_version: "1"
+name: "skills-demo"
+version: "0.1.0"
+description: >
+  SDK example for Agent Skills: Apache-licensed Anthropic reference
+  skills plus a Motet runner skill. Optional document skills (pdf/docx/pptx/xlsx)
+  are fetched locally from anthropics/skills — not redistributed by Motet.

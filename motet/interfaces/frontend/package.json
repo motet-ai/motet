@@ -1,0 +1,24 @@
+{
+  "name": "@motet/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/chat-explorer",
+    "dev:chat": "npm run dev --workspace=apps/chat-explorer",
+    "dev:ops": "npm run dev --workspace=apps/ops-dashboard",
+    "build": "npm run build --workspaces --if-present",
+    "build:chat": "npm run build --workspace=apps/chat-explorer",
+    "build:ops": "npm run build --workspace=apps/ops-dashboard",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}

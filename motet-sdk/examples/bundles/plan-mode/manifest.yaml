@@ -1,0 +1,12 @@
+format_version: "1"
+name: "plan-mode"
+version: "0.1.0"
+description: >
+  Example bundle for inspectable planning: plan-mode.plan-manager writes a
+  structured plan (JSON source of truth + markdown todos) as draft, requires
+  approve_plan before build, then implements while updating todo progress. No
+  Workflow emission, no PlanGraph. Replaces the retired PlanGraph / chat
+  planner surface (#173 Part B).
+load_order:
+  - config
+  - tools

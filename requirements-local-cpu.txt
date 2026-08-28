@@ -1,0 +1,25 @@
+# Local Inference Support - CPU-Only (ADR-0042)
+# Install with: pip install -r requirements-local-cpu.txt
+#
+# For systems without GPU but wanting local model inference
+# Uses CPU-optimized inference engines (slower but functional)
+
+# Core dependencies
+torch>=2.0.0  # PyTorch CPU version
+transformers>=4.30.0  # HuggingFace transformers
+
+# CPU-optimized inference
+llama-cpp-python>=0.2.0  # llama.cpp with CPU support (fastest CPU option)
+
+# Optional: ONNX Runtime for optimized CPU inference
+# onnxruntime>=1.16.0  # ONNX Runtime for CPU
+
+# Optional: Accelerate for optimized loading
+accelerate>=0.20.0  # Optimized model loading
+
+# Note: CPU inference performance tips:
+# 1. Use quantized models (Q4_K_M or Q8_0 GGUF format)
+# 2. Smaller models (7B) work better on CPU than large models (70B+)
+# 3. Expected performance: 5-20 tokens/sec (vs 100-3000 tokens/sec on GPU)
+# 4. Consider using llama.cpp for best CPU performance
+

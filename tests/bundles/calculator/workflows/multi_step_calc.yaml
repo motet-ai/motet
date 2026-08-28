@@ -1,0 +1,40 @@
+# multi_step_calc — two-step arithmetic workflow for the calculator bundle.
+#
+# Validates that bundle_reload.py correctly:
+#   1. Discovers .yaml files in the workflows/ directory.
+#   2. Namespaces the workflow_id as "calculator.multi_step_calc".
+#   3. Registers the Workflow with WorkflowRegistry so the LLM can invoke it.
+#
+# Workflow logic:
+#   step1: add A + B  →  sum
+#   step2: multiply sum × C  →  final result
+#
+# Step parameters may be supplied by the caller at execution time.
+# The LLM is expected to fill "a", "b", "c" from user input.
+
+workflow_id: multi_step_calc
+description: >
+  Two-step arithmetic workflow: first add two numbers, then multiply the result
+  by a third number.  Used for smoke-testing bundle workflow loading (ADR-0071).
+
+steps:
+  add_step:
+    step_id: add_step
+    command_type: calculator.calculate
+    description: "Add 'a' and 'b' to produce the intermediate sum."
+    parameters:
+      a: "{{a}}"
+      b: "{{b}}"
+      operation: add
+    dependencies: []
+
+  multiply_step:
+    step_id: multiply_step
+    command_type: calculator.calculate
+    description: "Multiply the sum from add_step by 'c'."
+    parameters:
+      a: "{{add_step.result}}"
+      b: "{{c}}"
+      operation: multiply
+    dependencies:
+      - add_step

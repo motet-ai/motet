@@ -1,0 +1,108 @@
+fastapi
+uvicorn
+httpx
+structlog
+prometheus-client
+redis
+celery
+asgiref
+psycopg
+pydantic-settings
+# Core dependencies
+pydantic>=2.0.0
+typing-extensions>=4.0.0
+asyncio-mqtt>=0.16.0
+
+# LLM and AI dependencies
+openai>=2.0.0
+anthropic>=0.110.0
+google-genai>=1.0.0
+
+# Vector DB (optional direct use; Chroma default embeddings use onnxruntime, not ST)
+chromadb>=0.4.0
+nltk>=3.8  # NLTK data preloaded in Docker image (wordnet / omw-1.4)
+
+# Database and storage
+redis>=4.5.0
+valkey-glide>=2.5.0
+valkey-glide-sync>=2.5.0
+psycopg[binary]>=3.1.0
+boto3>=1.42.97
+
+# Web and API
+fastapi>=0.104.0
+uvicorn>=0.24.0
+websockets>=11.0.0
+httpx>=0.25.0
+aiohttp>=3.9.0
+prometheus-client>=0.18.0
+
+# Observability
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp>=1.27.0
+opentelemetry-exporter-otlp-proto-http>=1.27.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+pydantic-settings>=2.0.0
+msgpack>=1.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+structlog>=23.0.0
+rich>=13.0.0
+click>=8.1.0
+
+# Security
+cryptography>=41.0.0
+passlib>=1.7.0
+
+# Scheduling and temporal reasoning
+schedule>=1.2.0
+python-dateutil>=2.8.0
+croniter>=1.4.0
+
+# File handling
+python-multipart>=0.0.6
+aiofiles>=23.0.0
+
+# Document extraction (ADR-0062)
+pdfplumber>=0.10
+python-docx>=1.1
+openpyxl>=3.1
+Pillow>=11.3.0  # Image processing and native AVIF decode
+pypdfium2>=4.0.0  # PDF page rendering for vision OCR (ADR-0062, ADR-0080: sole renderer, no Poppler)
+
+# Configuration
+pyyaml>=6.0.0
+toml>=0.10.0 
+
+# Monitoring
+psutil>=5.9.0
+
+# Concurrency backends for Celery (ADR-0033); eventlet removed (ADR-0080)
+gevent>=23.9.0
+asyncio-gevent  # Bridge between asyncio and gevent event loops (import as asyncio_gevent)
+
+# MCP (official SDK)
+mcp>=1.13,<2
+
+# Async/sync bridge for Celery tasks
+asgiref>=3.7.0
+
+# Browser automation for web scraping and CAPTCHA handling
+playwright>=1.40.0
+
+# Web search (core.web_search non-LLM backend — real SERP via ddgs metasearch)
+ddgs>=9.0.0
+
+# Local inference engines live in the dedicated `local-inference` image (ADR-0105).
+# Local inference is hoisted to an independent sibling service (LocalInferenceManager),
+# and workers reach it over Redis Streams via LocalInferenceClient. Workers therefore do
+# NOT load models and do NOT need llama-cpp-python / vllm / torch / transformers.
+# (See docker/images/local-inference/requirements.txt and requirements-local-cpu.txt.)
+# pynvml stays: hardware_detection.py uses it for GPU-aware capability advertisement/routing.
+pynvml>=11.5.0  # NVIDIA GPU detection (capability detection only; not inference)
+

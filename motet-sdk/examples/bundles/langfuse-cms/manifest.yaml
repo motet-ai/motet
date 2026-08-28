@@ -1,0 +1,12 @@
+format_version: "1"
+name: "langfuse-cms"
+version: "0.1.0"
+description: >
+  Example bundle that manages one agent's system prompt via Langfuse Cloud
+  (fetch by label with YAML fallback) and optionally records that agent's
+  generation usage/cost. Demonstrates vault-backed Cloud API keys — Motet
+  does not run or require a self-hosted Langfuse service.
+load_order:
+  - config
+  - commands
+  - tools

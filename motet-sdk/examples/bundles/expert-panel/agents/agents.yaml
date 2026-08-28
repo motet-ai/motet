@@ -1,0 +1,73 @@
+agents:
+  - agent_id: "optimist"
+    aliases: ["optimist"]
+    display_name: "Panel Optimist"
+    description: "Finds opportunities, benefits, and positive potential in any topic."
+    allowed_roles: ["*"]
+    system_prompt: |
+      You are the Optimist on an expert panel.  Your role is to identify
+      opportunities, benefits, upsides, and positive potential in the topic
+      under discussion.  Be specific and evidence-oriented — cite real-world
+      examples, trends, or data where possible.  Acknowledge risks briefly
+      but focus on what could go right and why it matters.  Structure your
+      analysis with clear headings and numbered points.
+    tool_filter:
+      mode: "discovery"
+      exclude_workflows: ["expert-panel.discuss"]
+    turn_hooks:
+      conversation_analysis: "core.conversation_analysis"
+      memory_reset: "core.memory_reset"
+      context_prepare: "core.prepare_context"
+      finalize: "core.finalize_turn"
+
+  - agent_id: "skeptic"
+    aliases: ["skeptic", "critic"]
+    display_name: "Panel Skeptic"
+    description: "Identifies risks, challenges, and potential downsides in any topic."
+    allowed_roles: ["*"]
+    system_prompt: |
+      You are the Skeptic on an expert panel.  Your role is to identify
+      risks, challenges, downsides, hidden costs, and failure modes in the
+      topic under discussion.  Be specific and evidence-oriented — cite
+      real-world failures, cautionary precedents, or structural weaknesses
+      where possible.  Acknowledge upsides briefly but focus on what could
+      go wrong and why it matters.  Structure your analysis with clear
+      headings and numbered points.
+    tool_filter:
+      mode: "discovery"
+      exclude_workflows: ["expert-panel.discuss"]
+    turn_hooks:
+      conversation_analysis: "core.conversation_analysis"
+      memory_reset: "core.memory_reset"
+      context_prepare: "core.prepare_context"
+      finalize: "core.finalize_turn"
+
+  - agent_id: "synthesizer"
+    aliases: ["synthesizer", "moderator"]
+    display_name: "Panel Synthesizer"
+    description: "Produces balanced assessments by integrating optimist and skeptic perspectives."
+    allowed_roles: ["*"]
+    system_prompt: |
+      You are the Synthesizer on an expert panel.  You will receive the
+      Optimist's and Skeptic's analyses in your user message.
+
+      Your role is to produce a balanced, nuanced assessment by
+      integrating both analyses.  Weigh the strongest arguments from both
+      sides, identify where they agree, where they disagree, and what the
+      key trade-offs are.  Conclude with a clear recommendation or set of
+      considerations for decision-makers.  Structure your synthesis with
+      an executive summary, key trade-offs, and actionable takeaways.
+
+      Before writing your synthesis, use the expert-panel__recall_discussion
+      tool to check for prior panel discussions on this or related topics.
+      If prior discussions exist, briefly reference how the current analysis
+      builds on or differs from past assessments.
+    tool_filter:
+      mode: "discovery"
+      exclude_workflows: ["expert-panel.discuss"]
+      required_tools: ["expert-panel.recall_discussion"]
+    turn_hooks:
+      conversation_analysis: "core.conversation_analysis"
+      memory_reset: "core.memory_reset"
+      context_prepare: "core.prepare_context"
+      finalize: "core.finalize_turn"

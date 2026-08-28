@@ -1,0 +1,319 @@
+:root {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-header.ant-layout-header {
+  padding: 12px 16px;
+  overflow: visible;
+  z-index: 100;
+}
+
+.rail {
+  padding: 16px;
+}
+
+.rail-right-sider {
+  overflow: auto;
+}
+
+/* Conversation list stays inside the remaining viewport (below the 56px header)
+   and scrolls inside the card. Conversations already uses overflow-y: auto;
+   it only needs a bounded height. */
+.rail-left-sider {
+  height: calc(100vh - 56px);
+  max-height: calc(100vh - 56px);
+  overflow: hidden;
+}
+
+.rail-left-sider .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.conversation-rail-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  background: inherit;
+}
+
+.conversation-list-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-list-card .ant-card-head {
+  flex-shrink: 0;
+}
+
+.conversation-list-card .ant-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.conversation-list-card .ant-conversations {
+  height: 100%;
+  max-height: 100%;
+}
+
+/* Inactive titles stay muted until hover. The selected conversation stays full contrast. */
+.conversation-list-card .ant-conversations-item:not(.ant-conversations-item-active) .ant-conversations-label {
+  color: var(--ant-color-text-tertiary) !important;
+  transition: color 0.15s ease;
+}
+
+.conversation-list-card .ant-conversations-item:not(.ant-conversations-item-active):hover .ant-conversations-label {
+  color: var(--ant-color-text) !important;
+}
+
+.conversation-list-card .ant-conversations-item-active .ant-conversations-label {
+  color: var(--ant-color-text) !important;
+}
+
+.conversation-list-card .conversation-title-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.content {
+  padding: 16px 20px;
+}
+
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 180px);
+  min-height: 400px;
+}
+
+/* Single scroll area: let Bubble.List's internal scroll-box own scrolling.
+   overflow: hidden so we don't get double scrollbars; list gets full height. */
+.chat-thread {
+  flex: 1;
+  overflow: hidden;
+  padding: 12px;
+  border-radius: 8px;
+  min-height: 0; /* flex child can shrink; required for height to resolve */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Force list to fill thread height so ant-bubble-list-scroll-box gets a proper height
+   and column-reverse (newest at bottom) + internal scroll work correctly. */
+.chat-thread .ant-bubble-list {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Scroll box inside Bubble.List: take full width (list is row flex, so child would otherwise be content-width and left-aligned). */
+.chat-thread .ant-bubble-list-scroll-box {
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Allow bubbles (especially assistant/diagram content) to expand with available chat width. */
+.chat-thread .ant-bubble-list,
+.chat-thread .ant-bubble,
+.chat-thread .ant-bubble-content,
+.chat-thread .ant-bubble-content-wrapper,
+.chat-thread .ant-bubble-content-wrap {
+  max-width: 100% !important;
+}
+
+.input-area {
+  flex-shrink: 0;
+  padding: 12px 0 6px;
+}
+
+.input-model-row {
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.input-model-select {
+  width: 336px;
+  max-width: 100%;
+}
+
+.model-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.model-option-key {
+  font-size: 11px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.input-reasoning-select {
+  width: 148px;
+}
+
+/* Closed select value — muted until hover or click/open. */
+.muted-until-hover-select {
+  --composer-select-fg: var(--ant-color-text-tertiary);
+}
+
+.muted-until-hover-select:hover,
+.muted-until-hover-select.ant-select-open,
+.muted-until-hover-select.ant-select-focused {
+  --composer-select-fg: var(--ant-color-text);
+}
+
+.muted-until-hover-select .ant-select-content-value,
+.muted-until-hover-select .ant-select-placeholder {
+  color: var(--composer-select-fg) !important;
+  transition: color 0.15s ease;
+  pointer-events: none;
+}
+
+.app-header .header-scope-select {
+  line-height: 1.5;
+  min-width: 0;
+}
+
+.app-header .header-agent-select {
+  width: 220px;
+  max-width: 28vw;
+}
+
+.app-header .header-surface-select {
+  width: 200px;
+  max-width: 24vw;
+}
+
+.input-thinking-label {
+  color: var(--ant-color-text-tertiary) !important;
+  transition: color 0.15s ease;
+}
+
+.input-thinking-control:hover .input-thinking-label {
+  color: var(--ant-color-text) !important;
+}
+
+.retrieval-popover-content {
+  width: 340px;
+}
+
+.retrieval-chip.ant-tag {
+  margin-inline-end: 0;
+  cursor: pointer;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ant-color-text-tertiary);
+  background: transparent;
+  transition: color 0.15s ease;
+}
+
+.retrieval-chip.ant-tag:hover,
+.retrieval-chip-active.ant-tag {
+  color: var(--ant-color-text);
+}
+
+.mermaid-block {
+  width: 100%;
+}
+
+.mermaid-block-render {
+  width: 100%;
+}
+
+/* Make Mermaid output responsive so it expands with available width (e.g., when siders collapse). */
+.mermaid-block-render svg,
+.mermaid-block-render img,
+.mermaid-block-render canvas {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+/* Ensure Mermaid diagrams have white background in dark mode for visibility */
+.mermaid-block-render svg {
+  background-color: transparent;
+}
+
+/* When parent has white background (dark mode), ensure SVG is visible */
+.mermaid-block-render[style*="background-color: rgb(255, 255, 255)"] svg,
+.mermaid-block-render[style*="background-color:#ffffff"] svg {
+  background-color: #ffffff !important;
+}
+
+/* One assistant turn: sub-agents nest inside the main agent's bubble. */
+.assistant-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.assistant-turn-subagents {
+  max-height: 14.5rem;
+  overflow-y: auto;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--ant-color-border-secondary, rgba(127, 127, 127, 0.28));
+  background: var(--ant-color-fill-tertiary, rgba(127, 127, 127, 0.08));
+}
+
+.assistant-turn-subagents-collapse.ant-collapse {
+  background: transparent;
+}
+
+.assistant-turn-subagents-collapse .ant-collapse-item {
+  border-bottom: 1px solid var(--ant-color-border-secondary, rgba(127, 127, 127, 0.18));
+}
+
+.assistant-turn-subagents-collapse .ant-collapse-item:last-child {
+  border-bottom: none;
+}
+
+.assistant-turn-subagents-collapse .ant-collapse-header {
+  padding-inline: 10px !important;
+  align-items: center !important;
+}
+
+.assistant-turn-subagents-collapse .ant-collapse-content-box {
+  padding-block: 0 8px !important;
+}
+
+.assistant-turn-subagent-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.assistant-turn-thinking {
+  margin-bottom: 8px;
+}
+
+.assistant-turn-primary {
+  min-width: 0;
+}

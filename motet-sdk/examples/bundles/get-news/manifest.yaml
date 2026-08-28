@@ -1,0 +1,7 @@
+format_version: "1"
+name: "get-news"
+version: "0.1.0"
+description: "Example workflow pipeline bundle for browser-assisted news aggregation and digest generation."
+load_order:
+  - commands
+  - workflows

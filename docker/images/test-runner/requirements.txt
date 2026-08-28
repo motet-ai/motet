@@ -1,0 +1,93 @@
+# Motet test-runner dependencies
+#
+# This image is intentionally a lightweight pytest driver. It should not mirror
+# worker/browser/embedding images; integration tests should validate those real
+# service images directly via Docker Compose.
+
+# Core runtime imports used by tests
+numpy>=1.24.0
+pyclip>=0.7.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+typing-extensions>=4.0.0
+
+# Web and API clients
+fastapi>=0.104.0
+uvicorn>=0.24.0
+websockets>=11.0.0
+httpx>=0.25.0
+aiohttp>=3.9.0
+python-multipart>=0.0.6
+aiofiles>=23.0.0
+jinja2>=3.1.0
+ddgs>=9.0.0
+
+# Distributed task execution
+celery>=5.3.0
+redis>=4.5.0
+valkey-glide>=2.5.0
+valkey-glide-sync>=2.5.0
+
+# Database and storage clients
+sqlalchemy>=2.0.0
+alembic>=1.12.0
+psycopg[binary]>=3.1.0
+boto3>=1.42.97
+
+# Observability
+structlog>=23.0.0
+prometheus-client>=0.18.0
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp>=1.27.0
+opentelemetry-exporter-otlp-proto-http>=1.27.0
+
+# Utilities
+python-dotenv>=1.0.0
+rich>=13.0.0
+click>=8.1.0
+click-log>=0.4.0
+pyyaml>=6.0.0
+toml>=0.10.0
+msgpack>=1.0.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-timeout>=2.2.0
+anyio>=4.0.0
+
+# Security
+cryptography>=41.0.0
+passlib>=1.7.0
+
+# Scheduling and temporal reasoning
+schedule>=1.2.0
+python-dateutil>=2.8.0
+croniter>=1.4.0
+
+# File handling
+pdfplumber>=0.10
+python-docx>=1.1
+openpyxl>=3.1
+pypdfium2>=4.0.0
+pytesseract>=0.3
+Pillow>=11.3.0
+
+# Monitoring
+psutil>=5.9.0
+
+# Concurrency backends for Celery (ADR-0033); eventlet removed (ADR-0080)
+gevent>=23.9.0
+asyncio-gevent  # Bridge between asyncio and gevent event loops (import as asyncio_gevent)
+
+# MCP (official SDK)
+mcp>=1.13,<2
+fastmcp==2.12.4
+
+# Async/sync bridge for Celery tasks
+asgiref>=3.7.0
+
+# System management and process control
+libtmux>=0.25.0

@@ -1,0 +1,4 @@
+format_version: "1"
+name: "celebs"
+version: "0.1.0"
+description: "Bundle fixture that defines celebrity-style persona agents for demo and testing."

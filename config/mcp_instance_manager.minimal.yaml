@@ -1,0 +1,20 @@
+# Minimal MCP Instance Manager Configuration
+#
+# This is a minimal configuration for testing with just the weather service.
+
+redis_url: "redis://localhost:6379/0"
+metrics_port: 9090
+health_port: 9091
+log_level: "INFO"
+
+services:
+  - service_id: "weather"
+    command: "npx"
+    args:
+      - "-y"
+      - "@timlukahorstmann/mcp-weather"
+    env:
+      ACCUWEATHER_API_KEY: "${ACCUWEATHER_API_KEY}"
+    instances: 1
+    is_stateful: false
+

@@ -1,0 +1,6 @@
+# ADR-0100 / ADR-0101 demo: declare the bundle's intended base image stack so
+# the catalog, validate-time lint, and ops UI can show it. We deliberately do
+# NOT set requirements_path here — that would activate the deployer-side
+# image build pipeline (MOTET_DEPLOYER_BUILD_*), which a sample bundle
+# shouldn't require for "did the stack tag render?" smoke testing.
+base_image_stack: python-minimal

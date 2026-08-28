@@ -1,0 +1,1468 @@
+"""
+Motet - Motet MCP Proxy
+
+Copyright (c) 2024-2025 Motet Contributors
+Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
+
+Author: Matt Chisholm <matt@motet.dev>
+Last Modified: 2026-08-20
+
+Description:
+    Main Motet MCP proxy component for the Motet distributed framework.
+    Bridges Motet Streams and MCP server stdio communication, translating
+    Motet Stream messages to JSON-RPC over stdio. Includes comprehensive
+    protocol translation, connection management, and error handling.
+
+Dependencies:
+    - asyncio: Asynchronous communication and subprocess management
+    - json: JSON-RPC protocol handling
+    - subprocess: MCP server process management
+    - structlog: Structured logging and observability
+    - pydantic: Data validation and model definitions
+    - MCP protocol and stream bridge
+
+Usage:
+    from motet.core.tools.mcp_motet.proxy.motet_mcp_proxy import MotetMCPProxy
+
+    # Create proxy
+    proxy = MotetMCPProxy(
+        service_id="weather",
+        context_id="user123",
+        command_context=context
+    )
+
+    # Start proxy
+    await proxy.start()
+
+    # Execute tool
+    result = await proxy.execute_tool("get_weather", {"location": "NYC"})
+
+Notes:
+    - Provides main Motet MCP proxy for distributed framework
+    - Includes comprehensive protocol translation (Motet ↔ JSON-RPC)
+    - Supports MCP server process management and lifecycle
+    - Includes connection management and error handling
+    - Supports tool execution and result processing
+    - Integrates with Motet Streams and MCP protocol
+    - Includes comprehensive observability and logging
+"""
+
+import asyncio
+import json
+import os
+import signal
+import subprocess
+import time
+import uuid
+import structlog
+from typing import Dict, Any, Optional, List, Callable, AsyncGenerator, Union
+from pathlib import Path
+
+from pydantic import BaseModel
+
+from motet.core.tools.mcp_motet.protocol import (
+    MCPStreamMessage,
+    MCPRequestMessage,
+    MCPResponseMessage,
+    MCPLogMessage,
+    MCPControlMessage,
+    MCPEventMessage,
+    StreamType,
+    Visibility,
+    LifecycleDuration,
+    generate_stream_name,
+)
+from motet.core.tools.mcp_motet.proxy.motet_mcp_stream_bridge import MotetMCPStreamBridge
+from motet.core.tools.mcp_motet.proxy.mcp_docker_stdio import DockerMCPAsyncProcess
+
+logger = structlog.get_logger(__name__)
+
+
+def _mcp_initialize_handshake_read_timeout_seconds() -> float:
+    """
+    Max seconds to wait for each stdout line while completing the MCP initialize
+    handshake after sending ``initialize``. Heavy servers (e.g. Playwright MCP after
+    ``npx``) may need well over the legacy 30s default.
+
+    Env: MOTET_MCP_INITIALIZE_TIMEOUT_SECONDS (5–600; default 120).
+    """
+    raw = (os.getenv("MOTET_MCP_INITIALIZE_TIMEOUT_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(5.0, min(float(raw), 600.0))
+        except ValueError:
+            pass
+    return 120.0
+
+
+# MCP protocol version for stdio initialization (ADR-0076). Aligns with latest spec.
+# See https://spec.modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle/
+MCP_PROTOCOL_VERSION = "2025-11-25"
+
+
+class MCPServerConfig(BaseModel):
+    """Configuration for an MCP server instance."""
+    server_id: str
+    command: str
+    args: List[str] = []
+    env: Dict[str, str] = {}
+    working_dir: Optional[str] = None
+    timeout_seconds: int = 30
+    max_restarts: int = 3
+    restart_delay_seconds: int = 5
+    exec_image: Optional[str] = None
+
+
+class ProxyStats(BaseModel):
+    """Statistics for the MCP proxy."""
+    proxy_id: str
+    server_config: MCPServerConfig
+    instance_key: str  # ADR-0058: Full instance key
+    status: str
+    start_time: float
+    requests_processed: int = 0
+    responses_sent: int = 0
+    errors: int = 0
+    last_activity: Optional[float] = None
+    last_error: Optional[str] = None
+    process_pid: Optional[int] = None
+    restart_count: int = 0
+
+
+class MotetMCPProxy:
+    """
+    Main proxy component that bridges Motet Streams and MCP server stdio.
+    
+    This class sits between Motet Streams and MCP server processes, translating
+    messages bidirectionally:
+    - Motet Stream requests → JSON-RPC over stdin
+    - JSON-RPC responses from stdout → Motet Stream responses  
+    - stderr logs → Motet Stream logs
+    
+    Key features:
+    - Three-stream protocol handling (stdin/stdout/stderr)
+    - Message correlation and routing
+    - Health monitoring and automatic restart
+    - Clean separation of JSON-RPC data from diagnostic logs
+    - State preservation during proxy restarts
+    """
+    def _resolve_scope(
+        self,
+        *,
+        service_id: str,
+        explicit_context_id: Optional[str],
+    ):
+        # ADR-0058 strictness: stream naming must be config-authoritative and based on the
+        # instance_key generated by MCPInstanceManager. Do NOT infer lifecycle from the
+        # presence of conversation_id/task_id here (that can silently create per-conversation
+        # streams for services configured as idle_timeout).
+        if not explicit_context_id:
+            raise ValueError(
+                "MotetMCPProxy requires explicit_context_id (ADR-0058 instance_key) for stream scoping. "
+                "This proxy should be constructed by MCPInstanceManager and receive config['context_id']."
+            )
+        if not isinstance(explicit_context_id, str) or not explicit_context_id.startswith(f"{service_id}:"):
+            raise ValueError(
+                f"MotetMCPProxy explicit_context_id must be an ADR-0058 instance_key starting with '{service_id}:'. "
+                f"Got: {explicit_context_id!r}"
+            )
+
+        instance_key = explicit_context_id
+
+        # Infer visibility from instance_key structure (tenant-centric hierarchy).
+        # GLOBAL: service_id:global
+        # TENANT: service_id:tenant
+        # MOTET: service_id:tenant:motet
+        # USER: service_id:tenant:motet:principal
+        parts = instance_key.split(":")
+        if len(parts) >= 2 and parts[1] == "global":
+            visibility = Visibility.GLOBAL
+        elif len(parts) >= 4:
+            visibility = Visibility.USER
+        elif len(parts) == 3:
+            visibility = Visibility.MOTET
+        elif len(parts) == 2:
+            visibility = Visibility.TENANT
+        else:
+            # Should be impossible due to startswith check + split behavior
+            visibility = Visibility.GLOBAL
+
+        # Infer lifecycle from suffix (idle_timeout vs permanent are both "no suffix").
+        if ":conversation:" in instance_key:
+            lifecycle = LifecycleDuration.CONVERSATION
+        elif ":task:" in instance_key:
+            lifecycle = LifecycleDuration.TASK
+        elif ":session:" in instance_key:
+            lifecycle = LifecycleDuration.SESSION
+        else:
+            lifecycle = LifecycleDuration.PERMANENT
+
+        context_id = explicit_context_id
+        return instance_key, visibility, lifecycle, context_id
+    
+    def __init__(self, config: MCPServerConfig, 
+                 context_id: Optional[str] = None,
+                 conversation_id: Optional[str] = None,
+                 task_id: Optional[str] = None,
+                 tenant_id: Optional[str] = None,
+                 principal_id: Optional[str] = None,
+                 motet_id: Optional[str] = None,
+                 worker_id: Optional[str] = None):
+        """
+        Initialize the Motet MCP Proxy.
+        
+        Args:
+            config: Configuration for the MCP server
+            context_id: Optional explicit context identifier (takes precedence)
+            conversation_id: Optional conversation identifier for context scoping
+            task_id: Optional task identifier for context scoping
+            tenant_id: Optional tenant identifier for context scoping
+            principal_id: Optional principal (user) identifier for context scoping
+            motet_id: Optional motet identifier for context scoping
+            worker_id: Optional worker identifier for worker-affinity routing
+        """
+        self.server_config = config
+        self.proxy_id = f"proxy-{config.server_id}-{str(uuid.uuid4())[:8]}"
+        self.worker_id = worker_id
+        self.motet_id = motet_id or os.getenv("MOTET_MOTET_ID", "default")
+        
+        # Debug-only: constructor runs frequently under load.
+        logger.debug(
+            "mcp_proxy_init",
+            context_id=context_id,
+            conversation_id=conversation_id,
+            task_id=task_id,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            motet_id=self.motet_id,
+            worker_id=worker_id,
+        )
+        
+        # Determine visibility/lifecycle and instance key
+        self.instance_key, self.visibility, self.lifecycle, self.context_id = self._resolve_scope(
+            service_id=config.server_id,
+            explicit_context_id=context_id,
+        )
+        logger.debug(
+            "mcp_proxy_scope_resolved",
+            visibility=self.visibility.value,
+            lifecycle=self.lifecycle.value,
+            instance_key=self.instance_key,
+        )
+        
+        # Initialize stream bridge
+        self.stream_bridge = MotetMCPStreamBridge(f"{self.proxy_id}_bridge")
+        
+        # Generate stream names with manager bus prefix (ADR-0105 / #235)
+        self.request_stream = generate_stream_name(
+            service_id=config.server_id,
+            visibility=self.visibility,
+            instance_key=self.instance_key,
+            stream_type=StreamType.REQUESTS,
+            manager_id=worker_id,
+        )
+        self.response_stream = generate_stream_name(
+            service_id=config.server_id,
+            visibility=self.visibility,
+            instance_key=self.instance_key,
+            stream_type=StreamType.RESPONSES,
+            manager_id=worker_id,
+        )
+        self.log_stream = generate_stream_name(
+            service_id=config.server_id,
+            visibility=self.visibility,
+            instance_key=self.instance_key,
+            stream_type=StreamType.LOGS,
+            manager_id=worker_id,
+        )
+        self.control_stream = generate_stream_name(
+            service_id=config.server_id,
+            visibility=self.visibility,
+            instance_key=self.instance_key,
+            stream_type=StreamType.CONTROL,
+            manager_id=worker_id,
+        )
+        self.event_stream = generate_stream_name(
+            service_id=config.server_id,
+            visibility=self.visibility,
+            instance_key=self.instance_key,
+            stream_type=StreamType.EVENTS,
+            manager_id=worker_id,
+        )
+        
+        # MCP server process management (direct subprocess - Option 3.5)
+        self.mcp_process: Optional[Union[asyncio.subprocess.Process, DockerMCPAsyncProcess]] = None
+        self.consumer_name = f"consumer-{self.proxy_id}"
+        self.group_name = f"group-{config.server_id}-{self.instance_key}"
+        
+        # State tracking
+        self.stats = ProxyStats(
+            proxy_id=self.proxy_id,
+            server_config=config,
+            instance_key=self.instance_key,
+            status="initialized",
+            start_time=time.time()
+        )
+        
+        # Request correlation
+        self._pending_requests: Dict[str, float] = {}  # request_id -> timestamp
+        self._running = False
+        self._shutdown_event = asyncio.Event()
+        
+    async def start(self) -> None:
+        """Start the proxy and begin processing messages."""
+        start_time = time.time()
+        try:
+            logger.info("Starting Motet MCP Proxy",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id,
+                       instance_key=self.instance_key,
+                       visibility=self.visibility.value,
+                       lifecycle=self.lifecycle.value)
+            
+            # Initialize stream bridge
+            await self.stream_bridge.initialize()
+            
+            # Start MCP server process
+            await self._start_mcp_server()
+            
+            # Create consumer groups for streams
+            await self._setup_consumer_groups()
+            
+            # Start message processing tasks
+            self._running = True
+            self.stats.status = "running"
+            
+            # Publish startup event
+            await self._publish_event("started", {
+                "proxy_id": self.proxy_id,
+                "server_id": self.server_config.server_id,
+                "instance_key": self.instance_key,
+                "process_pid": self.mcp_process.pid if self.mcp_process else None
+            })
+            
+            # Start processing loops in background
+            self._request_task = asyncio.create_task(self._process_requests())
+            self._stdout_task = asyncio.create_task(self._process_stdout())
+            self._stderr_task = asyncio.create_task(self._process_stderr())
+            self._control_task = asyncio.create_task(self._process_control_messages())
+            self._health_task = asyncio.create_task(self._health_monitor())
+            
+            total_elapsed = (time.time() - start_time) * 1000
+            logger.info("mcp_proxy_started_successfully",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id,
+                       instance_key=self.instance_key,
+                       total_startup_ms=int(total_elapsed),
+                       process_pid=self.mcp_process.pid if self.mcp_process else None,
+                       request_stream=self.request_stream,
+                       response_stream=self.response_stream,
+                       group_name=self.group_name,
+                       consumer_name=self.consumer_name)
+            
+        except Exception as e:
+            self.stats.errors += 1
+            self.stats.last_error = str(e)
+            self.stats.status = "error"
+            
+            logger.error("Failed to start Motet MCP Proxy",
+                        proxy_id=self.proxy_id,
+                        error=str(e))
+            
+            await self._publish_event("error", {
+                "error": str(e),
+                "status": "startup_failed"
+            })
+            
+            raise
+    
+    async def _start_mcp_server(self) -> None:
+        """
+        Start the MCP server process using Python subprocess (Option 3.5 - No tmux).
+        
+        This proxy owns and manages the MCP server subprocess directly using
+        asyncio subprocess management for clean 1:1 relationship.
+        """
+        try:
+            logger.info("Starting MCP server subprocess",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id,
+                       command=self.server_config.command,
+                       args=self.server_config.args)
+            
+            # Prepare environment variables
+            env = os.environ.copy()
+            if self.server_config.env:
+                env.update(self.server_config.env)
+            
+            # Prepare command
+            cmd = [self.server_config.command] + self.server_config.args
+
+            from motet.core.execution.mcp_backend import mcp_exec_uses_docker
+
+            use_docker = mcp_exec_uses_docker()
+
+            # Special handling for playwright (requires xvfb-run on host subprocess only)
+            if self.server_config.server_id == "playwright" and not use_docker:
+                cmd = ["xvfb-run", "--auto-servernum", "--"] + cmd
+                env["PLAYWRIGHT_HEADLESS"] = "true"
+                logger.info("Using xvfb-run for playwright server", proxy_id=self.proxy_id)
+            elif self.server_config.server_id == "playwright" and use_docker:
+                if cmd and cmd[0] == "xvfb-run" and "--" in cmd:
+                    idx = cmd.index("--")
+                    cmd = cmd[idx + 1 :]
+                env.setdefault("PLAYWRIGHT_HEADLESS", "true")
+
+            subprocess_start = time.time()
+            if use_docker:
+                from motet.core.tools.mcp_motet.proxy.mcp_docker_stdio import start_mcp_stdio_docker
+
+                self.mcp_process = await start_mcp_stdio_docker(
+                    command=cmd[0],
+                    args=cmd[1:],
+                    env=env,
+                    working_dir=self.server_config.working_dir,
+                    exec_image=self.server_config.exec_image,
+                    server_id=self.server_config.server_id,
+                    worker_id=self.worker_id,
+                )
+            else:
+                # Launch the MCP server subprocess
+                # Set large buffer limit for JSON-RPC responses
+                is_openapi_adapter = any("openapi_adapter" in str(arg) for arg in cmd)
+                buffer_limit = (
+                    10 * 1024 * 1024 if is_openapi_adapter else 1024 * 1024
+                )
+                self.mcp_process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    cwd=self.server_config.working_dir,
+                    limit=buffer_limit,
+                )
+            subprocess_elapsed = (time.time() - subprocess_start) * 1000
+            logger.debug(
+                "mcp_server_process_created",
+                proxy_id=self.proxy_id,
+                server_id=self.server_config.server_id,
+                elapsed_ms=int(subprocess_elapsed),
+                backend="docker" if use_docker else "subprocess",
+            )
+            
+            # Check if process started successfully
+            proc_boot = self.mcp_process
+            if proc_boot is None:
+                raise RuntimeError("MCP subprocess was not created")
+            stderr_boot = proc_boot.stderr
+            if stderr_boot is None:
+                raise RuntimeError("MCP subprocess stderr pipe missing")
+            if proc_boot.returncode is not None:
+                stderr_output = await stderr_boot.read()
+                raise RuntimeError(
+                    f"MCP server process exited immediately with code {proc_boot.returncode}: "
+                    f"{stderr_output.decode('utf-8', errors='replace')}"
+                )
+            
+            # Send MCP protocol initialization handshake
+            init_start = time.time()
+            await self._send_mcp_initialization()
+            init_elapsed = (time.time() - init_start) * 1000
+            logger.debug("MCP initialization handshake complete",
+                        proxy_id=self.proxy_id,
+                        server_id=self.server_config.server_id,
+                        elapsed_ms=int(init_elapsed))
+            
+            self.stats.process_pid = proc_boot.pid
+            
+            logger.info("MCP server subprocess started successfully",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id,
+                       pid=proc_boot.pid)
+            
+        except Exception as e:
+            logger.error("Failed to start MCP server subprocess",
+                        proxy_id=self.proxy_id,
+                        server_id=self.server_config.server_id,
+                        error=str(e),
+                        exc_info=True)
+            raise
+    
+    async def _send_mcp_initialization(self) -> None:
+        """
+        Send MCP protocol initialization handshake to the server.
+        
+        According to MCP spec, clients must:
+        1. Send `initialize` request with client info
+        2. Wait for server's `initialize` response
+        3. Send `initialized` notification
+        
+        This must be done before any other requests like `tools/list`.
+        """
+        try:
+            proc = self.mcp_process
+            if proc is None:
+                raise RuntimeError("MCP subprocess not started")
+            stdin_w, stdout_r, stderr_r = proc.stdin, proc.stdout, proc.stderr
+            if stdin_w is None or stdout_r is None or stderr_r is None:
+                raise RuntimeError("MCP subprocess missing stdio pipes")
+
+            logger.info("Sending MCP initialization handshake",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id)
+            
+            # 1. Send initialize request
+            initialize_request = {
+                "jsonrpc": "2.0",
+                "id": f"init-{uuid.uuid4()}",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {
+                        "roots": {"listChanged": True},
+                        "sampling": {},
+                        "elicitation": self._build_elicitation_capabilities(),
+                    },
+                    "clientInfo": {
+                        "name": "Motet",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+            
+            # Write to stdin (MCP spec: MUST be UTF-8, ADR-0076)
+            request_json = json.dumps(initialize_request) + "\n"
+            stdin_w.write(request_json.encode("utf-8"))
+            await stdin_w.drain()
+            
+            logger.debug("Sent initialize request", request=initialize_request)
+            
+            # 2. Wait for initialize response (read from stdout)
+            # Set a timeout in case server doesn't respond
+            # Skip empty lines (some servers output to stderr first)
+            read_timeout = _mcp_initialize_handshake_read_timeout_seconds()
+            try:
+                max_attempts = 10
+                attempt = 0
+                response_data = None
+                
+                while attempt < max_attempts:
+                    response_line = await asyncio.wait_for(
+                        stdout_r.readline(),
+                        timeout=read_timeout,
+                    )
+                    
+                    # Check if line is empty
+                    if not response_line:
+                        # EOF - process may have terminated
+                        if proc.returncode is not None:
+                            # Try to read stderr for error details
+                            stderr_output = b""
+                            try:
+                                # Avoid hanging forever on live servers that keep stderr open.
+                                stderr_output = await asyncio.wait_for(stderr_r.read(4096), timeout=0.5)
+                            except Exception:
+                                pass  # best-effort stderr snippet
+                            
+                            stderr_str = stderr_output.decode('utf-8', errors='replace')[:500] if stderr_output else "No stderr output"
+                            raise RuntimeError(
+                                f"MCP server process terminated during initialization "
+                                f"(exit code: {proc.returncode})\n"
+                                f"STDERR: {stderr_str}"
+                            )
+                        
+                        # Empty line, try next line
+                        attempt += 1
+                        continue
+                    
+                    # Try to parse as JSON
+                    response_str = response_line.decode('utf-8', errors='replace').strip()
+                    if not response_str:
+                        # Empty string after decode, try next line
+                        attempt += 1
+                        continue
+                    
+                    try:
+                        response_data = json.loads(response_str)
+                        break  # Successfully parsed JSON
+                    except json.JSONDecodeError as e:
+                        # Not valid JSON, might be diagnostic output
+                        logger.debug("Skipping non-JSON line during initialization",
+                                   proxy_id=self.proxy_id,
+                                   line=response_str[:100],
+                                   error=str(e))
+                        attempt += 1
+                        continue
+                
+                if response_data is None:
+                    # Try to read stderr for error details
+                    stderr_output = b""
+                    try:
+                        # Avoid hanging forever on live servers that keep stderr open.
+                        stderr_output = await asyncio.wait_for(stderr_r.read(4096), timeout=0.5)
+                    except Exception:
+                        pass  # best-effort stderr snippet
+
+                    stderr_str = stderr_output.decode('utf-8', errors='replace')[:500] if stderr_output else "No stderr output"
+                    raise RuntimeError(
+                        f"Failed to get valid JSON response from MCP server after {max_attempts} attempts\n"
+                        f"STDERR: {stderr_str}"
+                    )
+                
+                if "error" in response_data:
+                    raise RuntimeError(f"MCP initialization failed: {response_data['error']}")
+                
+                logger.info("Received initialize response",
+                           server_capabilities=response_data.get("result", {}).get("capabilities", {}))
+                
+            except asyncio.TimeoutError:
+                # Try to read stderr for error details
+                stderr_output = b""
+                try:
+                    # Avoid hanging forever on live servers that keep stderr open.
+                    stderr_output = await asyncio.wait_for(stderr_r.read(4096), timeout=0.5)
+                except Exception:
+                    pass  # best-effort stderr snippet
+
+                stderr_str = stderr_output.decode('utf-8', errors='replace')[:500] if stderr_output else "No stderr output"
+                raise RuntimeError(
+                    f"MCP server did not respond to initialize request within {read_timeout} seconds\n"
+                    f"STDERR: {stderr_str}"
+                )
+            
+            # 3. Send initialized notification
+            initialized_notification = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }
+            
+            notification_json = json.dumps(initialized_notification) + "\n"
+            stdin_w.write(notification_json.encode("utf-8"))
+            await stdin_w.drain()
+            
+            logger.info("MCP initialization handshake completed successfully",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id)
+            
+        except Exception as e:
+            logger.error("Failed to complete MCP initialization handshake",
+                        proxy_id=self.proxy_id,
+                        server_id=self.server_config.server_id,
+                        error=str(e),
+                        exc_info=True)
+            raise
+    
+    async def stop(self) -> None:
+        """
+        Stop the proxy and terminate the MCP server subprocess.
+        
+        This gracefully shuts down the proxy and its owned MCP server process.
+        """
+        try:
+            logger.info("Stopping Motet MCP Proxy",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id)
+            
+            # Set shutdown flag
+            self._running = False
+            self._shutdown_event.set()
+            self.stats.status = "stopping"
+            
+            # Cancel background tasks
+            for task_name, task in [
+                ("request", getattr(self, '_request_task', None)),
+                ("stdout", getattr(self, '_stdout_task', None)),
+                ("stderr", getattr(self, '_stderr_task', None)),
+                ("control", getattr(self, '_control_task', None)),
+                ("health", getattr(self, '_health_task', None))
+            ]:
+                if task and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            
+            # Publish shutdown event
+            try:
+                await self._publish_event("stopping", {
+                    "proxy_id": self.proxy_id,
+                    "server_id": self.server_config.server_id
+                })
+            except Exception as e:
+                logger.warning("Failed to publish stop event", error=str(e))
+            
+            # Terminate the MCP server process (never block the manager loop forever)
+            if self.mcp_process and self.mcp_process.returncode is None:
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self.mcp_process.terminate)
+                    try:
+                        await asyncio.wait_for(self.mcp_process.wait(), timeout=5.0)
+                        logger.info("MCP server process terminated gracefully",
+                                   proxy_id=self.proxy_id)
+                    except asyncio.TimeoutError:
+                        await loop.run_in_executor(None, self.mcp_process.kill)
+                        try:
+                            await asyncio.wait_for(self.mcp_process.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "MCP server process wait timed out after kill",
+                                proxy_id=self.proxy_id,
+                            )
+                        else:
+                            logger.warning("MCP server process killed after timeout",
+                                          proxy_id=self.proxy_id)
+                        
+                except Exception as e:
+                    logger.error("Error terminating MCP server process",
+                                proxy_id=self.proxy_id,
+                                error=str(e))
+            
+            # Close stream bridge
+            try:
+                await self.stream_bridge.shutdown()
+            except Exception as e:
+                logger.warning("Error closing stream bridge", error=str(e))
+            
+            self.stats.status = "stopped"
+            
+            logger.info("Motet MCP Proxy stopped",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id)
+            
+        except Exception as e:
+            logger.error("Error stopping proxy",
+                        proxy_id=self.proxy_id,
+                        error=str(e),
+                        exc_info=True)
+            self.stats.status = "error"
+            raise
+    
+    async def _setup_consumer_groups(self) -> None:
+        """Set up consumer groups for all streams."""
+        streams = [
+            self.request_stream,
+            self.control_stream
+        ]
+        
+        for stream_name in streams:
+            await self.stream_bridge.create_consumer_group(
+                stream_name, self.group_name, "0"
+            )
+    
+    async def _process_requests(self) -> None:
+        """Process incoming request messages from Motet Streams."""
+        # Debug-only: avoids startup log noise when many proxies are created.
+        logger.debug(
+            "mcp_proxy_started_consuming_requests",
+            proxy_id=self.proxy_id,
+            server_id=self.server_config.server_id,
+            request_stream=self.request_stream,
+            group_name=self.group_name,
+            consumer_name=self.consumer_name,
+        )
+        
+        while self._running:
+            try:
+                messages = await self.stream_bridge.consume_messages(
+                    self.request_stream,
+                    self.group_name,
+                    self.consumer_name,
+                    count=10,
+                    block_ms=1000
+                )
+                
+                if messages:
+                    logger.debug("mcp_proxy_received_messages",
+                               proxy_id=self.proxy_id,
+                               message_count=len(messages),
+                               request_stream=self.request_stream)
+                
+                for msg_data in messages:
+                    await self._handle_request_message(msg_data)
+                    
+            except Exception as e:
+                self.stats.errors += 1
+                self.stats.last_error = str(e)
+                logger.error("mcp_proxy_error_processing_requests",
+                           proxy_id=self.proxy_id,
+                           server_id=self.server_config.server_id,
+                           request_stream=self.request_stream,
+                           error=str(e),
+                           error_type=type(e).__name__,
+                           exc_info=True)
+                await asyncio.sleep(1)  # Brief pause before retry
+    
+    async def _handle_request_message(self, msg_data: Dict[str, Any]) -> None:
+        """Handle a single request message."""
+        request_msg: Optional[MCPRequestMessage] = None
+        try:
+            # Parse the request message
+            message_data = msg_data["message_data"]
+            request_msg = MCPRequestMessage(**message_data)
+            message_id = msg_data.get("message_id", "unknown")
+            
+            logger.info("mcp_proxy_handling_request",
+                       proxy_id=self.proxy_id,
+                       server_id=self.server_config.server_id,
+                       request_id=request_msg.id,
+                       message_id=message_id,
+                       method=request_msg.jsonrpc_request.get("method"),
+                       tool_name=request_msg.jsonrpc_request.get("params", {}).get("name") if request_msg.jsonrpc_request.get("method") == "tools/call" else None)
+            
+            # Track the request
+            self._pending_requests[request_msg.id] = time.time()
+            self.stats.requests_processed += 1
+            self.stats.last_activity = time.time()
+            
+            # Send JSON-RPC request to MCP server stdin
+            jsonrpc_request = json.dumps(request_msg.jsonrpc_request) + "\n"
+            
+            if self.mcp_process and self.mcp_process.stdin:
+                if self.mcp_process.returncode is not None:
+                    raise RuntimeError(
+                        f"MCP server process not available (status: dead, "
+                        f"exit={self.mcp_process.returncode})"
+                    )
+                try:
+                    self.mcp_process.stdin.write(jsonrpc_request.encode('utf-8'))
+                    await self.mcp_process.stdin.drain()
+                except (BrokenPipeError, ConnectionError, OSError) as e:
+                    raise RuntimeError(f"MCP server stdin closed: {e}") from e
+                
+                logger.info("mcp_proxy_sent_request_to_server",
+                           proxy_id=self.proxy_id,
+                           server_id=self.server_config.server_id,
+                           request_id=request_msg.id,
+                           method=request_msg.jsonrpc_request.get("method"),
+                           tool_name=request_msg.jsonrpc_request.get("params", {}).get("name") if request_msg.jsonrpc_request.get("method") == "tools/call" else None,
+                           process_pid=self.mcp_process.pid if self.mcp_process else None,
+                           process_alive=self.mcp_process.returncode is None if self.mcp_process else False)
+            else:
+                process_status = "none" if not self.mcp_process else ("dead" if self.mcp_process.returncode is not None else "alive")
+                raise RuntimeError(f"MCP server process not available (status: {process_status})")
+            
+            # Acknowledge the message
+            await self.stream_bridge.acknowledge_message(
+                self.request_stream,
+                self.group_name,
+                message_id
+            )
+            
+            logger.debug("mcp_proxy_acknowledged_request",
+                        proxy_id=self.proxy_id,
+                        request_id=request_msg.id,
+                        message_id=message_id)
+            
+        except Exception as e:
+            self.stats.errors += 1
+            self.stats.last_error = str(e)
+            logger.error("mcp_proxy_failed_to_handle_request",
+                        proxy_id=self.proxy_id,
+                        server_id=self.server_config.server_id,
+                        message_id=msg_data.get("message_id"),
+                        request_id=request_msg.id if request_msg is not None else "unknown",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        has_mcp_process=self.mcp_process is not None,
+                        process_pid=self.mcp_process.pid if self.mcp_process else None,
+                        process_returncode=self.mcp_process.returncode if self.mcp_process else None,
+                        exc_info=True)
+    
+    async def _process_stdout(self) -> None:
+        """Process stdout from MCP server and publish responses."""
+        while self._running:
+            try:
+                if not self.mcp_process or not self.mcp_process.stdout:
+                    await asyncio.sleep(1)
+                    continue
+                
+                # Read line from stdout (asyncio StreamReader)
+                line_bytes = await self.mcp_process.stdout.readline()
+                
+                if not line_bytes:
+                    # EOF: attach/process is gone. Do not spin — a tight continue
+                    # with returncode still None starves the manager event loop
+                    # (ADR-0135: one child death must not wedge /health).
+                    logger.warning(
+                        "MCP server stdout EOF",
+                        proxy_id=self.proxy_id,
+                        return_code=self.mcp_process.returncode,
+                    )
+                    break
+                
+                line = line_bytes.decode('utf-8', errors='replace').strip()
+                if not line:
+                    continue
+                
+                # Try to parse as JSON-RPC response
+                try:
+                    response_data = json.loads(line)
+                    if (
+                        isinstance(response_data, dict)
+                        and "method" in response_data
+                        and "id" in response_data
+                        and "result" not in response_data
+                        and "error" not in response_data
+                    ):
+                        await self._handle_server_request(response_data)
+                    else:
+                        await self._handle_jsonrpc_response(response_data)
+                    
+                except json.JSONDecodeError:
+                    # Not valid JSON, treat as diagnostic output
+                    await self._publish_log("info", f"MCP server output: {line}")
+                    
+            except Exception as e:
+                self.stats.errors += 1
+                self.stats.last_error = str(e)
+                logger.error("Error processing stdout",
+                           proxy_id=self.proxy_id,
+                           error=str(e))
+                await asyncio.sleep(1)
+    
+    async def _handle_jsonrpc_response(self, response_data: Dict[str, Any]) -> None:
+        """Handle a JSON-RPC response from the MCP server."""
+        try:
+            request_id = response_data.get("id")
+            if not request_id:
+                # This is a notification, not a response
+                await self._publish_notification(response_data)
+                return
+            
+            # Calculate processing time
+            processing_time_ms = None
+            if request_id in self._pending_requests:
+                start_time = self._pending_requests.pop(request_id)
+                processing_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Create response message
+            response_msg = MCPResponseMessage(
+                service_id=self.server_config.server_id,
+                instance_key=self.instance_key,
+                request_id=request_id,
+                processing_time_ms=processing_time_ms,
+                jsonrpc_response=response_data
+            )
+            
+            # Publish to response stream
+            await self.stream_bridge.publish_message(self.response_stream, response_msg)
+            
+            self.stats.responses_sent += 1
+            self.stats.last_activity = time.time()
+            
+            logger.debug("Published response to stream",
+                        proxy_id=self.proxy_id,
+                        request_id=request_id,
+                        processing_time_ms=processing_time_ms)
+            
+        except Exception as e:
+            self.stats.errors += 1
+            self.stats.last_error = str(e)
+            logger.error("Failed to handle JSON-RPC response",
+                        proxy_id=self.proxy_id,
+                        response_data=response_data,
+                        error=str(e))
+    
+    async def _process_stderr(self) -> None:
+        """Process stderr from MCP server and publish log messages."""
+        while self._running:
+            try:
+                if not self.mcp_process or not self.mcp_process.stderr:
+                    await asyncio.sleep(1)
+                    continue
+                
+                # Read line from stderr (asyncio StreamReader)
+                line_bytes = await self.mcp_process.stderr.readline()
+                
+                if not line_bytes:
+                    logger.warning(
+                        "MCP server stderr EOF",
+                        proxy_id=self.proxy_id,
+                        return_code=self.mcp_process.returncode,
+                    )
+                    break
+                
+                line = line_bytes.decode('utf-8', errors='replace').strip()
+                if not line:
+                    continue
+                
+                # Publish as log message
+                await self._publish_log("info", line, raw_stderr=line)
+                
+            except Exception as e:
+                self.stats.errors += 1
+                self.stats.last_error = str(e)
+                logger.error("Error processing stderr",
+                           proxy_id=self.proxy_id,
+                           error=str(e))
+                await asyncio.sleep(1)
+    
+    async def _process_control_messages(self) -> None:
+        """Process control messages from Motet Streams."""
+        while self._running:
+            try:
+                messages = await self.stream_bridge.consume_messages(
+                    self.control_stream,
+                    self.group_name,
+                    self.consumer_name,
+                    count=5,
+                    block_ms=1000
+                )
+                
+                for msg_data in messages:
+                    await self._handle_control_message(msg_data)
+                    
+            except Exception as e:
+                self.stats.errors += 1
+                self.stats.last_error = str(e)
+                logger.error("Error processing control messages",
+                           proxy_id=self.proxy_id,
+                           error=str(e))
+                await asyncio.sleep(1)
+    
+    async def _handle_control_message(self, msg_data: Dict[str, Any]) -> None:
+        """Handle a control message."""
+        try:
+            message_data = msg_data["message_data"]
+            control_msg = MCPControlMessage(**message_data)
+            
+            logger.info("Received control message",
+                       proxy_id=self.proxy_id,
+                       command=control_msg.command,
+                       params=control_msg.params)
+            
+            if control_msg.command == "health":
+                await self._handle_health_check()
+            elif control_msg.command == "restart":
+                await self._handle_restart()
+            elif control_msg.command == "stop":
+                await self._handle_stop()
+            
+            # Acknowledge the message
+            await self.stream_bridge.acknowledge_message(
+                self.control_stream,
+                self.group_name,
+                msg_data["message_id"]
+            )
+            
+        except Exception as e:
+            self.stats.errors += 1
+            self.stats.last_error = str(e)
+            logger.error("Failed to handle control message",
+                        proxy_id=self.proxy_id,
+                        error=str(e))
+    
+    async def _health_monitor(self) -> None:
+        """Monitor proxy and MCP server health."""
+        while self._running:
+            try:
+                await asyncio.sleep(30)  # Health check every 30 seconds
+                
+                # Check if MCP server process is still running
+                if self.mcp_process and self.mcp_process.returncode is not None:
+                    logger.warning("MCP server process died, attempting restart",
+                                 proxy_id=self.proxy_id,
+                                 return_code=self.mcp_process.returncode)
+                    
+                    if self.stats.restart_count < self.server_config.max_restarts:
+                        await self._restart_mcp_server()
+                    else:
+                        logger.error("Max restarts exceeded, stopping proxy",
+                                   proxy_id=self.proxy_id,
+                                   restart_count=self.stats.restart_count)
+                        self.stats.status = "failed"
+                        break
+                
+                # Publish health status
+                await self._publish_event("health_check", {
+                    "status": self.stats.status,
+                    "process_pid": self.mcp_process.pid if self.mcp_process else None,
+                    "requests_processed": self.stats.requests_processed,
+                    "responses_sent": self.stats.responses_sent,
+                    "errors": self.stats.errors,
+                    "restart_count": self.stats.restart_count
+                })
+                
+            except Exception as e:
+                self.stats.errors += 1
+                self.stats.last_error = str(e)
+                logger.error("Error in health monitor",
+                           proxy_id=self.proxy_id,
+                           error=str(e))
+    
+    async def _restart_mcp_server(self) -> None:
+        """Restart the MCP server process."""
+        try:
+            # Stop current process
+            if self.mcp_process:
+                try:
+                    self.mcp_process.terminate()
+                    await asyncio.sleep(2)
+                    if self.mcp_process.returncode is None:
+                        self.mcp_process.kill()
+                except Exception:
+                    pass  # best-effort process cleanup before restart
+
+            # Wait before restart
+            await asyncio.sleep(self.server_config.restart_delay_seconds)
+            
+            # Start new process
+            await self._start_mcp_server()
+            
+            self.stats.restart_count += 1
+            self.stats.status = "running"
+            
+            await self._publish_event("restarted", {
+                "restart_count": self.stats.restart_count,
+                "new_process_pid": self.mcp_process.pid if self.mcp_process else None
+            })
+            
+            logger.info("Successfully restarted MCP server",
+                       proxy_id=self.proxy_id,
+                       restart_count=self.stats.restart_count)
+            
+        except Exception as e:
+            self.stats.errors += 1
+            self.stats.last_error = str(e)
+            self.stats.status = "error"
+            logger.error("Failed to restart MCP server",
+                        proxy_id=self.proxy_id,
+                        error=str(e))
+    
+    async def _publish_log(self, level: str, message: str, 
+                          request_id: Optional[str] = None,
+                          raw_stderr: Optional[str] = None) -> None:
+        """Publish a log message to the log stream."""
+        try:
+            log_msg = MCPLogMessage(
+                service_id=self.server_config.server_id,
+                instance_key=self.instance_key,
+                request_id=request_id,
+                level=level,
+                message=message,
+                raw_stderr=raw_stderr
+            )
+            
+            await self.stream_bridge.publish_message(self.log_stream, log_msg)
+            
+        except Exception as e:
+            logger.error("Failed to publish log message",
+                        proxy_id=self.proxy_id,
+                        level=level,
+                        message=message,
+                        error=str(e))
+    
+    async def _publish_event(self, event_type: str, event_data: Dict[str, Any]) -> None:
+        """Publish an event to the event stream."""
+        try:
+            event_msg = MCPEventMessage(
+                service_id=self.server_config.server_id,
+                instance_key=self.instance_key,
+                event_type=event_type,
+                event_data=event_data
+            )
+            
+            await self.stream_bridge.publish_message(self.event_stream, event_msg)
+            
+        except Exception as e:
+            logger.error("Failed to publish event",
+                        proxy_id=self.proxy_id,
+                        event_type=event_type,
+                        error=str(e))
+    
+    async def _publish_notification(self, notification_data: Dict[str, Any]) -> None:
+        """Publish a notification message."""
+        # Notifications would go to a separate stream if needed
+        # For now, just log them
+        logger.info("Received MCP notification",
+                   proxy_id=self.proxy_id,
+                   notification=notification_data)
+
+    def _build_elicitation_capabilities(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Build the MCP elicitation capability object for initialize.
+
+        Supports env override:
+        - MOTET_MCP_ELICITATION_MODES=form,url (default)
+        """
+        modes_raw = os.getenv("MOTET_MCP_ELICITATION_MODES", "form,url")
+        supported_modes = {
+            mode.strip().lower()
+            for mode in modes_raw.split(",")
+            if mode.strip()
+        }
+        capabilities: Dict[str, Dict[str, Any]] = {}
+        if "form" in supported_modes:
+            capabilities["form"] = {}
+        if "url" in supported_modes:
+            capabilities["url"] = {}
+        if not capabilities:
+            # Spec requires at least one mode when elicitation is declared.
+            capabilities["form"] = {}
+        return capabilities
+
+    async def _handle_server_request(self, request_data: Dict[str, Any]) -> None:
+        """Handle JSON-RPC requests initiated by the MCP server."""
+        method = request_data.get("method")
+        request_id = request_data.get("id")
+        logger.info(
+            "Handling server-initiated MCP request",
+            proxy_id=self.proxy_id,
+            server_id=self.server_config.server_id,
+            method=method,
+            request_id=request_id,
+        )
+        try:
+            if method == "elicitation/create":
+                response_payload = await self._handle_elicitation_request(request_data)
+            else:
+                response_payload = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {method}",
+                    },
+                }
+        except Exception as e:
+            logger.error(
+                "Failed to process server-initiated MCP request",
+                proxy_id=self.proxy_id,
+                method=method,
+                request_id=request_id,
+                error=str(e),
+                exc_info=True,
+            )
+            response_payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32603,
+                    "message": "Internal error while handling server request",
+                },
+            }
+
+        if self.mcp_process and self.mcp_process.stdin:
+            if self.mcp_process.returncode is not None:
+                return
+            response_json = json.dumps(response_payload) + "\n"
+            try:
+                self.mcp_process.stdin.write(response_json.encode("utf-8"))
+                await self.mcp_process.stdin.drain()
+            except (BrokenPipeError, ConnectionError, OSError) as e:
+                logger.warning(
+                    "MCP server stdin closed while answering server request",
+                    proxy_id=self.proxy_id,
+                    error=str(e),
+                )
+                return
+            logger.debug(
+                "Sent response to server-initiated request",
+                proxy_id=self.proxy_id,
+                request_id=request_id,
+                method=method,
+            )
+
+    async def _handle_elicitation_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle MCP `elicitation/create` by policy-based local resolution.
+
+        Policies:
+        - MOTET_MCP_ELICITATION_FORM_POLICY: auto_accept_defaults | accept_empty | decline | cancel
+        - MOTET_MCP_ELICITATION_URL_POLICY: accept | decline | cancel
+        """
+        request_id = request_data.get("id")
+        params = request_data.get("params") or {}
+        mode = str(params.get("mode") or "form").lower()
+        message = params.get("message")
+        requested_schema = params.get("requestedSchema") or {}
+        elicitation_id = params.get("elicitationId")
+        url = params.get("url")
+
+        await self._publish_event(
+            "elicitation_requested",
+            {
+                "mode": mode,
+                "request_id": request_id,
+                "message": message,
+                "elicitation_id": elicitation_id,
+                "url": url,
+            },
+        )
+
+        if mode == "url":
+            action = os.getenv("MOTET_MCP_ELICITATION_URL_POLICY", "accept").strip().lower()
+            if action not in {"accept", "decline", "cancel"}:
+                action = "accept"
+            result: Dict[str, Any] = {"action": action}
+        else:
+            # Treat omitted/unknown mode as form for backwards compatibility.
+            form_policy = os.getenv(
+                "MOTET_MCP_ELICITATION_FORM_POLICY", "auto_accept_defaults"
+            ).strip().lower()
+            if form_policy == "decline":
+                result = {"action": "decline"}
+            elif form_policy == "cancel":
+                result = {"action": "cancel"}
+            elif form_policy == "accept_empty":
+                result = {"action": "accept", "content": {}}
+            else:
+                content = self._build_elicitation_content(requested_schema)
+                result = {"action": "accept", "content": content}
+
+        await self._publish_event(
+            "elicitation_responded",
+            {
+                "mode": mode,
+                "request_id": request_id,
+                "action": result.get("action"),
+                "elicitation_id": elicitation_id,
+            },
+        )
+
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result,
+        }
+
+    def _build_elicitation_content(self, requested_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build deterministic form content from requestedSchema.
+
+        Strategy:
+        - Use explicit property defaults when present.
+        - Populate required fields without defaults with primitive fallbacks.
+        """
+        properties = requested_schema.get("properties") or {}
+        required = set(requested_schema.get("required") or [])
+        content: Dict[str, Any] = {}
+
+        for field_name, field_schema in properties.items():
+            if "default" in field_schema:
+                content[field_name] = field_schema["default"]
+            elif field_name in required:
+                content[field_name] = self._fallback_value_for_field_schema(field_schema)
+
+        # Ensure required fields defined without a corresponding property key are represented.
+        for field_name in required:
+            if field_name not in content:
+                content[field_name] = None
+
+        return content
+
+    def _fallback_value_for_field_schema(self, field_schema: Dict[str, Any]) -> Any:
+        """Return a deterministic fallback value for a primitive schema field."""
+        field_type = field_schema.get("type")
+        if field_type == "boolean":
+            return False
+        if field_type == "integer":
+            return 0
+        if field_type == "number":
+            return 0
+        if field_type == "array":
+            return []
+
+        # Try enum-like schemas first.
+        enum_values = field_schema.get("enum")
+        if isinstance(enum_values, list) and enum_values:
+            return enum_values[0]
+
+        for key in ("oneOf", "anyOf"):
+            options = field_schema.get(key)
+            if isinstance(options, list):
+                for option in options:
+                    if isinstance(option, dict) and "const" in option:
+                        return option["const"]
+
+        # Default string/null fallback.
+        return ""
+    
+    async def _handle_health_check(self) -> None:
+        """Handle health check request."""
+        health_data = {
+            "proxy_id": self.proxy_id,
+            "status": self.stats.status,
+            "uptime_seconds": time.time() - self.stats.start_time,
+            "requests_processed": self.stats.requests_processed,
+            "responses_sent": self.stats.responses_sent,
+            "errors": self.stats.errors,
+            "process_pid": self.mcp_process.pid if self.mcp_process else None,
+            "process_running": self.mcp_process and self.mcp_process.returncode is None
+        }
+        
+        await self._publish_event("health_response", health_data)
+    
+    async def _handle_restart(self) -> None:
+        """Handle restart request."""
+        logger.info("Received restart request", proxy_id=self.proxy_id)
+        await self._restart_mcp_server()
+    
+    async def _handle_stop(self) -> None:
+        """Handle stop request."""
+        logger.info("Received stop request", proxy_id=self.proxy_id)
+        await self.shutdown()
+    
+    async def shutdown(self) -> None:
+        """Gracefully shutdown the proxy."""
+        try:
+            logger.info("Shutting down Motet MCP Proxy", proxy_id=self.proxy_id)
+            
+            self._running = False
+            self.stats.status = "stopping"
+            
+            # Publish shutdown event
+            await self._publish_event("stopping", {
+                "proxy_id": self.proxy_id,
+                "final_stats": self.stats.dict()
+            })
+            
+            # Stop MCP server process
+            if self.mcp_process:
+                try:
+                    self.mcp_process.terminate()
+                    await asyncio.sleep(2)
+                    if self.mcp_process.returncode is None:
+                        self.mcp_process.kill()
+                        await asyncio.sleep(1)
+                except Exception:
+                    pass  # best-effort process cleanup during shutdown
+
+            # Shutdown stream bridge
+            await self.stream_bridge.shutdown()
+            
+            self.stats.status = "stopped"
+            
+            # Publish final shutdown event
+            await self._publish_event("stopped", {
+                "proxy_id": self.proxy_id,
+                "shutdown_time": time.time()
+            })
+            
+            logger.info("Motet MCP Proxy shutdown completed", proxy_id=self.proxy_id)
+            
+        except Exception as e:
+            logger.error("Error during proxy shutdown",
+                        proxy_id=self.proxy_id,
+                        error=str(e))
+    
+    def get_stats(self) -> ProxyStats:
+        """Get current proxy statistics."""
+        return self.stats
+    
+    @property
+    def is_running(self) -> bool:
+        """Check if the proxy is running."""
+        return self._running
+
+
+# Export the main class
+__all__ = [
+    "MotetMCPProxy",
+    "MCPServerConfig",
+    "ProxyStats"
+]

@@ -1,0 +1,250 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "motet"
+version = "0.1.0"
+description = "Motet runtime — distributed AI command and control framework"
+readme = "README.md"
+license = { text = "FSL-1.1-ALv2" }
+requires-python = ">=3.11"
+authors = [{ name = "Motet Contributors", email = "matt@motet.dev" }]
+keywords = ["motet", "ai", "distributed", "agent", "llm", "orchestration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    # Core
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "typing-extensions>=4.0.0",
+
+    # Web and API
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=11.0.0",
+    "httpx>=0.25.0",
+    "aiohttp>=3.9.0",
+    "python-multipart>=0.0.6",
+    "aiofiles>=23.0.0",
+    "jinja2>=3.1.0",
+    "ddgs>=9.0.0",
+
+    # Distributed task execution
+    "celery>=5.3.0",
+    "redis>=4.5.0",
+    "valkey-glide>=2.5.0",
+    "valkey-glide-sync>=2.5.0",
+
+    # Database and storage
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.12.0",
+    "psycopg[binary]>=3.1.0",
+    "boto3>=1.42.97",
+
+    # LLM providers
+    "openai>=2.0.0",
+    "anthropic>=0.110.0",
+    "google-genai>=1.0.0",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.10",
+
+    # Vector databases and embeddings
+    "sentence-transformers>=2.2.0",
+    "chromadb>=0.4.0",
+    "weaviate-client>=3.25.0",
+    "pinecone-client>=2.2.0",
+    "bm25-chroma>=0.1.0",
+
+    # Observability
+    "structlog>=23.0.0",
+    "prometheus-client>=0.18.0",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+
+    # Data processing
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "msgpack>=1.0.0",
+
+    # Host integration (local edge clipboard)
+    "pyclip>=0.7.0",
+
+    # CLI and utilities
+    "click>=8.1.0",
+    "click-log>=0.4.0",
+    "rich>=13.0.0",
+    "python-dotenv>=1.0.0",
+
+    # Security
+    "cryptography>=41.0.0",
+    "passlib>=1.7.0",
+    "PyJWT>=2.10.1",
+
+    # Scheduling
+    "schedule>=1.2.0",
+    "python-dateutil>=2.8.0",
+    "croniter>=1.4.0",
+
+    # Configuration
+    "pyyaml>=6.0.0",
+    "toml>=0.10.0",
+
+    # Monitoring
+    "flower>=2.0.0",
+    "psutil>=5.9.0",
+
+    # Concurrency backends (ADR-0033)
+    "gevent>=23.9.0",
+    "asyncio-gevent",
+    "asgiref>=3.7.0",
+
+    # MCP (Model Context Protocol)
+    "mcp>=1.13,<2",
+    # OpenAPI → MCP stdio adapter (motet.core.tools.mcp_adapters.openapi_adapter_server)
+    "fastmcp==2.12.4",
+
+    # System management
+    "libtmux>=0.25.0",
+
+    # Browser automation
+    "playwright>=1.40.0",
+
+    # Document extraction and image processing (ADR-0062)
+    "pdfplumber>=0.10",
+    "python-docx>=1.1",
+    "python-pptx>=1.0.2",
+    "odfpy>=1.4.1",
+    "striprtf>=0.0.32",
+    "openpyxl>=3.1",
+    "pypdfium2>=4.0.0",
+    "pytesseract>=0.3",
+    "Pillow>=11.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-timeout>=2.2.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
+    "motet-host @ file:hosting/motet-host",
+]
+docs = [
+    "sphinx>=5.0.0",
+    "sphinx-rtd-theme>=1.2.0",
+]
+gpu = [
+    "pynvml>=11.5.0",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+]
+
+[project.scripts]
+motet = "motet.cli:main"
+motet-api = "motet.server:main"
+motet-cli = "motet.cli:main"
+
+[project.urls]
+Homepage = "https://motet.dev"
+Repository = "https://github.com/motet-ai/motet"
+
+[tool.setuptools.packages.find]
+include = ["motet*"]
+exclude = ["tests*", "docs*", "motet-sdk*", "motet-placeholder*"]
+
+[tool.setuptools.package-data]
+motet = [
+    "interfaces/templates/**/*",
+    "interfaces/static/**/*",
+    "interfaces/frontend/**/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests for individual components",
+    "integration: Integration tests for component interactions",
+    "performance: Performance and benchmark tests",
+    "e2e: End-to-end user scenario tests",
+    "distributed: Tests requiring distributed workers",
+    "mcp: Tests related to MCP server integration",
+    "slow: Slow-running tests (> 10 seconds)",
+    "requires_redis: Tests requiring Redis connection",
+    "requires_vault: Tests requiring vault infrastructure",
+    "requires_external: Tests requiring external services",
+    "stress: Stress tests with high resource usage",
+    "ui: UI and interface tests",
+    "health: Health monitoring tests",
+    "monitoring: Monitoring and observability tests",
+    "alerting: Alerting system tests",
+    "local_models: Live local GGUF model smoke tests gated by MOTET_RUN_LOCAL_MODEL_TESTS=1",
+    "live_llm: Live provider API adapter matrix gated by MOTET_LIVE_ADAPTER_MATRIX=1",
+    "timeout: Tests with custom timeout settings",
+]
+addopts = "--strict-markers --strict-config --verbose --tb=short --durations=10 --maxfail=5"
+timeout = 30
+timeout_method = "thread"
+timeout_func_only = true
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(name)s: %(message)s"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::FutureWarning",
+    "ignore:.*Unknown pytest.mark.*:pytest.PytestUnknownMarkWarning",
+    "ignore:.*on_event is deprecated.*:DeprecationWarning",
+    "ignore:.*Use aclose.*:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["motet"]
+omit = ["*/tests/*", "*/test_*", "*/__pycache__/*", "*/venv/*", "*/migrations/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "class .*\\(Protocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

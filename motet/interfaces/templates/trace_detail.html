@@ -1,0 +1,19 @@
+<html><body>
+<h3>Trace: {{ trace_id }}</h3>
+<div><button id="fmt">Toggle pretty</button> <input id="f" placeholder="filter substring"></div>
+<pre id="out" style="white-space:pre-wrap"></pre>
+<script>
+const params=new URLSearchParams(window.location.search);
+const key=params.get('key')||'';
+let pretty=true;
+function render(data){
+  const q=document.getElementById('f').value;
+  const rows=(q?data.filter(e=>JSON.stringify(e).includes(q)):data);
+  document.getElementById('out').textContent=rows.map(e=>pretty?JSON.stringify(e,null,2):JSON.stringify(e)).join('\n');
+}
+fetch(window.location.pathname + '.json', {headers: {'X-API-Key': key}})
+.then(r=>r.json()).then(data=>{window._trace=data; render(data); document.getElementById('fmt').onclick=()=>{pretty=!pretty; render(window._trace)}; document.getElementById('f').oninput=()=>render(window._trace);})
+.catch(err=>{document.getElementById('out').textContent='Error: '+err});
+</script>
+</body></html>
+

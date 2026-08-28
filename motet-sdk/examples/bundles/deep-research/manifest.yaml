@@ -1,0 +1,8 @@
+format_version: "1"
+name: "deep-research"
+version: "0.1.0"
+description: "Example bundle demonstrating multi-step research with LLM-powered planning, parallel web search, content extraction, synthesis, and memory persistence."
+load_order:
+  - commands
+  - tools
+  - workflows

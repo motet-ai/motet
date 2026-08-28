@@ -1,0 +1,39 @@
+<html><body>
+<h3>Traces</h3>
+<p>Append ?key=API_KEY to pass your key to the viewer.</p>
+<div>
+  <input id="q" placeholder="filter by substring (id)"/>
+  <button id="refresh">Refresh</button>
+  <label>Limit <input id="lim" type="number" value="50" min="1" max="200" style="width:60px"/></label>
+  <button id="copy" title="Copy filtered IDs to clipboard">Copy IDs</button>
+  <label><input type="checkbox" id="auto"/> Auto-refresh</label>
+  <span id="err" style="color:#c00"></span>
+ </div>
+<div id="list">Loading...</div>
+<script>
+const params=new URLSearchParams(window.location.search);
+const key=params.get('key')||'';
+async function load(){
+  const lim=document.getElementById('lim').value||50;
+  const q=document.getElementById('q').value||'';
+  try{
+    const r=await fetch('/api/v1/debug/traces.json?limit='+encodeURIComponent(lim)+(q?('&q='+encodeURIComponent(q)):''),{headers:{'X-API-Key': key}});
+    const data=await r.json();
+    const rows=data; // q is now handled by the API
+    let html='<ul>';
+    for(const t of rows){html+=`<li><a href='/api/v1/debug/traces/${t.trace_id}?key=${encodeURIComponent(key)}'>${t.trace_id}</a> - ${t.bytes}B</li>`}
+    html+='</ul>';document.getElementById('list').innerHTML=html; document.getElementById('err').textContent='';
+  }catch(e){ document.getElementById('err').textContent=String(e); }
+}
+document.getElementById('refresh').onclick=load;
+document.getElementById('q').oninput=load;
+document.getElementById('copy').onclick=()=>{
+  const links=[...document.querySelectorAll('#list a')];
+  const ids=links.map(a=>a.textContent).join('\n');
+  navigator.clipboard.writeText(ids);
+};
+setInterval(()=>{ if(document.getElementById('auto').checked){ load(); }}, 3000);
+load();
+</script>
+</body></html>
+

@@ -1,0 +1,11 @@
+# Motet python-office image stack — Python wheels for document/PDF skill runners.
+# System packages (LibreOffice, poppler, ghostscript, pandoc, Node) are in the Dockerfile.
+
+pypdf>=4.0,<6
+pdfplumber>=0.11,<1
+Pillow>=10,<12
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
+python-pptx>=0.6.21,<2
+reportlab>=4.0,<5
+lxml>=5.0,<6

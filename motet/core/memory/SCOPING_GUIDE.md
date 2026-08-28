@@ -1,0 +1,487 @@
+# Memory Scoping Guide - ADR-0027 Phase 2
+
+## Overview
+
+The Memory Scoping system provides intelligent, context-aware memory organization based on access patterns and retention policies. This guide explains how to use the scoping strategies effectively.
+
+## Quick Start
+
+### Basic Memory Storage with Scoping
+
+```python
+from motet.core.commands.builtin.memory import memory_store
+from motet.core.commands.command_data_classes import MemoryStoreData
+
+# Store a conversation-scoped memory (automatic)
+result = motet.do(memory_store, data=MemoryStoreData(
+    content="User prefers technical explanations",
+    type="preference",
+    tags=["user_preference"],
+    metadata={"source": "conversation"}
+))
+# Scope is automatically determined from MotetContext
+```
+
+### Explicit Scope Control
+
+```python
+from motet.core.types import MemoryScopeType
+
+# Store a principal-scoped memory (follows user across conversations)
+result = motet.do(memory_store, data=MemoryStoreData(
+    content="User timezone: PST",
+    type="user_profile",
+    scope_type=MemoryScopeType.PRINCIPAL.value,
+    tags=["profile", "timezone"]
+))
+
+# Store a global memory (tenant-wide, permanent)
+result = motet.do(memory_store, data=MemoryStoreData(
+    content="Company policy: 2-week vacation notice required",
+    type="policy",
+    scope_type=MemoryScopeType.GLOBAL.value,
+    tags=["policy", "hr"]
+))
+```
+
+## Scope Types
+
+### 1. GLOBAL Scope
+**Purpose**: Tenant-wide shared knowledge (within current motet)
+
+**Characteristics:**
+- Accessible to all users/conversations in tenant+motet
+- Permanent retention (no TTL)
+- No automatic promotion
+- No validation required
+
+**Use Cases:**
+- Company policies and procedures
+- Shared team knowledge
+- System configuration
+- Common reference data
+
+**Example:**
+```python
+motet.memory.store(
+    content="Security policy: MFA required for admin access",
+    type="security_policy",
+    tags=["security", "admin"],
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.GLOBAL
+)
+```
+
+### 2. PRINCIPAL Scope
+**Purpose**: User-specific memories that follow the user
+
+**Characteristics:**
+- Scoped to specific user/principal
+- 30 days TTL (if inactive)
+- No automatic promotion
+- Accessible across all user's conversations
+
+**Use Cases:**
+- User preferences ("prefers concise responses")
+- User profile information
+- Personal context
+- User-specific learnings
+
+**Example:**
+```python
+motet.memory.store(
+    content="User prefers code examples over theory",
+    type="user_preference",
+    tags=["learning_style", "preference"],
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.PRINCIPAL
+)
+```
+
+### 3. CONVERSATION Scope
+**Purpose**: Conversation-specific ephemeral context
+
+**Characteristics:**
+- Scoped to specific conversation
+- 24 hours TTL
+- Cleaned up after conversation ends
+- Can be auto-promoted to PRINCIPAL if important
+
+**Use Cases:**
+- Current conversation topic
+- Temporary context ("user is asking about project Alpha")
+- In-conversation preferences
+- Ephemeral working state
+
+**Example:**
+```python
+motet.memory.store(
+    content="Current discussion: debugging async/await issues",
+    type="conversation_context",
+    tags=["topic", "debugging"],
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.CONVERSATION
+)
+```
+
+### 4. TASK Scope
+**Purpose**: Task-specific ephemeral memories
+
+**Characteristics:**
+- Scoped to specific task execution
+- 1 hour TTL
+- Cleaned up after task completion
+- Not promotable
+
+**Use Cases:**
+- Workflow step state
+- Batch processing progress
+- Temporary computation results
+- Task-specific context
+
+**Example:**
+```python
+motet.memory.store(
+    content="Processing batch 3 of 10, 142 items completed",
+    type="task_progress",
+    tags=["batch_processing", "progress"],
+    metadata={"batch_id": "batch_003"},
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.TASK
+)
+```
+
+### 5. COLLECTIVE Scope
+**Purpose**: Cross-worker validated insights
+
+**Characteristics:**
+- Permanent (until consensus changes)
+- Requires validation by 3+ workers
+- 67% consensus threshold
+- Accessible to all workers
+
+**Use Cases:**
+- Best practices discovered through consensus
+- Common patterns validated by multiple workers
+- Shared learnings promoted from individual memories
+- System-wide optimizations
+
+**Example:**
+```python
+# Usually created by promotion from BACKGROUND scope
+# After cross-worker validation
+motet.memory.store(
+    content="Best practice: Use connection pooling for Redis operations",
+    type="best_practice",
+    tags=["redis", "performance", "validated"],
+    metadata={"validators": ["worker1", "worker2", "worker3"], "consensus": 1.0},
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.COLLECTIVE
+)
+```
+
+### 6. BACKGROUND Scope
+**Purpose**: Autonomous thinking from background processes
+
+**Characteristics:**
+- 7 days TTL
+- Can be promoted to COLLECTIVE if validated
+- Requires 2+ workers for validation
+- Generated by scheduled reflection tasks
+
+**Use Cases:**
+- Post-conversation reflections
+- Pattern detection insights
+- Autonomous analysis results
+- Scheduled consolidation outputs
+
+**Example:**
+```python
+# Typically created by background reflection service
+motet.memory.store(
+    content="Pattern detected: users frequently ask about async context managers after learning about async/await",
+    type="learning_insight",
+    tags=["pattern", "learning_path"],
+    metadata={"confidence": 0.85, "sample_size": 42},
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.BACKGROUND
+)
+```
+
+## Memory Recall
+
+### Recall by Scope
+
+#### Conversation-Scoped Recall
+```python
+# Get all memories for current conversation
+memories = motet.memory.recall_conversation(
+    conversation_id=motet.conversation_id,
+    limit=10,
+    types=["conversation_context", "preference"]
+)
+```
+
+#### Principal-Scoped Recall
+```python
+# Get user-specific memories
+memories = motet.memory.recall_principal(
+    principal_id=motet.principal_id,
+    limit=10,
+    types=["user_preference", "user_profile"]
+)
+```
+
+#### Multi-Scope Hierarchical Recall
+```python
+from motet.core.types import MemoryScopeType
+
+# Get memories from multiple scopes in priority order
+# GLOBAL → PRINCIPAL → CONVERSATION
+memories = motet.memory.recall_multi_scope(
+    scope_types=[
+        MemoryScopeType.GLOBAL,
+        MemoryScopeType.PRINCIPAL,
+        MemoryScopeType.CONVERSATION
+    ],
+    motet_context=motet,
+    limit=20,
+    types=["policy", "preference", "context"]
+)
+```
+
+## Retention and Cleanup
+
+### TTL Summary
+
+| Scope | TTL | Cleanup Trigger |
+|-------|-----|----------------|
+| GLOBAL | None (permanent) | None |
+| PRINCIPAL | 30 days (inactive) | None |
+| CONVERSATION | 24 hours | conversation_end |
+| TASK | 1 hour | task_complete |
+| COLLECTIVE | None (permanent) | consensus_change |
+| BACKGROUND | 7 days | None |
+
+### Auto-Promotion Rules
+
+1. **CONVERSATION → PRINCIPAL**: Important conversation context can be promoted to user profile
+2. **BACKGROUND → COLLECTIVE**: Validated insights can be promoted to collective knowledge
+
+### Validation Requirements
+
+- **COLLECTIVE**: Requires 3 workers with 67% consensus
+- **BACKGROUND (for promotion)**: Requires 2 workers validation
+
+## Advanced Patterns
+
+### Custom Scoping Strategy
+
+```python
+from motet.core.memory.scoping import MemoryScopingStrategy, MemoryScopeType
+
+class CustomScopingStrategy(MemoryScopingStrategy):
+    """Custom strategy for specialized use case."""
+    
+    def determine_scope(self, motet, content, metadata):
+        # Custom logic to determine scope
+        if "urgent" in metadata.get("tags", []):
+            return MemoryScopeType.GLOBAL
+        return MemoryScopeType.CONVERSATION
+    
+    def generate_scope_id(self, motet):
+        return f"custom-{motet.conversation_id}"
+    
+    def get_retention_policy(self):
+        return {
+            "ttl_seconds": 7200,  # 2 hours
+            "cleanup_trigger": "custom_trigger",
+            "auto_promote": True,
+            "replication_factor": 2,
+            "requires_validation": False
+        }
+
+# Use custom strategy
+custom_strategy = CustomScopingStrategy()
+motet.memory.store(
+    content="Custom memory",
+    type="custom",
+    tags=["special"],
+    motet_context=motet,
+    scope_strategy=custom_strategy
+)
+```
+
+### Programmatic Scope Detection
+
+```python
+from motet.core.memory.scoping import get_strategy_for_scope
+from motet.core.types import MemoryScopeType
+
+# Get strategy instance
+strategy = get_strategy_for_scope(MemoryScopeType.CONVERSATION)
+
+# Determine scope
+scope_type = strategy.determine_scope(motet, content, metadata)
+
+# Generate scope ID
+scope_id = strategy.generate_scope_id(motet)
+
+# Get retention policy
+policy = strategy.get_retention_policy()
+print(f"TTL: {policy['ttl_seconds']}s, Auto-promote: {policy['auto_promote']}")
+```
+
+## Best Practices
+
+### 1. Choose the Right Scope
+
+- **GLOBAL**: Use sparingly for truly shared knowledge (policies, procedures)
+- **PRINCIPAL**: Default for user preferences and profile information
+- **CONVERSATION**: Default for in-conversation context
+- **TASK**: Use for ephemeral task state that doesn't need persistence
+- **COLLECTIVE**: Only for validated, consensus-based insights
+- **BACKGROUND**: For autonomous system learnings
+
+### 2. Tag Consistently
+
+```python
+# Good: Consistent tagging for easy recall
+motet.memory.store(
+    content="User prefers dark mode",
+    type="user_preference",
+    tags=["ui", "theme", "preference"],
+    scope_strategy=MemoryScopeType.PRINCIPAL
+)
+```
+
+### 3. Include Metadata
+
+```python
+# Good: Rich metadata for better filtering and analysis
+motet.memory.store(
+    content="API rate limit reached",
+    type="system_event",
+    tags=["error", "rate_limit"],
+    metadata={
+        "service": "openai",
+        "timestamp": "2025-10-29T12:00:00Z",
+        "retry_after": 60
+    },
+    scope_strategy=MemoryScopeType.TASK
+)
+```
+
+### 4. Leverage Multi-Scope Recall
+
+```python
+# Good: Hierarchical recall for comprehensive context
+# Get tenant policies + user preferences + conversation context
+memories = motet.memory.recall_multi_scope(
+    scope_types=[
+        MemoryScopeType.GLOBAL,      # Company policies
+        MemoryScopeType.PRINCIPAL,   # User preferences
+        MemoryScopeType.CONVERSATION # Current context
+    ],
+    motet_context=motet,
+    limit=30
+)
+```
+
+### 5. Respect Retention Policies
+
+- Don't store ephemeral data in GLOBAL scope
+- Use CONVERSATION scope for temporary working state
+- Let TTL handle cleanup automatically
+- Use PRINCIPAL scope for persistent user data
+
+## Troubleshooting
+
+### Memory Not Found
+
+```python
+# Check scope type
+memories = motet.memory.recall_conversation(
+    conversation_id=motet.conversation_id,
+    limit=100
+)
+print(f"Found {len(memories)} conversation memories")
+
+# Try multi-scope
+all_memories = motet.memory.recall_multi_scope(
+    scope_types=[
+        MemoryScopeType.GLOBAL,
+        MemoryScopeType.PRINCIPAL,
+        MemoryScopeType.CONVERSATION,
+        MemoryScopeType.TASK
+    ],
+    motet_context=motet,
+    limit=100
+)
+print(f"Found {len(all_memories)} total memories")
+```
+
+### Expired Memories
+
+```python
+# Check TTL in retention policy
+from motet.core.memory.scoping import get_strategy_for_scope
+
+strategy = get_strategy_for_scope(MemoryScopeType.CONVERSATION)
+policy = strategy.get_retention_policy()
+print(f"Conversation memories expire after {policy['ttl_seconds']}s")
+```
+
+### Wrong Scope Assignment
+
+```python
+# Be explicit about scope
+motet.memory.store(
+    content="Important user preference",
+    type="preference",
+    tags=["important"],
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.PRINCIPAL  # Explicit PRINCIPAL scope
+)
+```
+
+## Migration from Legacy Code
+
+### Before (No Scoping)
+```python
+# Old way: No scoping, manual tagging
+motet.memory.store(
+    content="User preference",
+    type="note",
+    tags=["user", "preference"]
+)
+```
+
+### After (With Scoping)
+```python
+# New way: Automatic scoping with context
+motet.memory.store(
+    content="User preference",
+    type="preference",
+    tags=["ui", "theme"],
+    motet_context=motet,
+    scope_strategy=MemoryScopeType.PRINCIPAL
+)
+```
+
+## Related Documentation
+
+- **ADR-0027**: Collective Memory Architecture (Phase 2 implementation)
+- **API Reference**: `motet/core/memory/scoping.py`
+- **Memory Types**: `motet/core/types.py` - `MemoryScopeType` enum
+- **Memory Manager**: `motet/core/memory/manager.py`
+- **Memory Commands**: `motet/core/commands/builtin/memory.py`
+
+## Support
+
+For questions or issues:
+1. Review this guide and ADR-0027
+2. Check the inline documentation in `scoping.py`
+3. Examine the test suite (when available) for usage examples
+4. Review the commit: `feat: implement ADR-0027 Phase 2 - Memory Scoping Strategies`
+

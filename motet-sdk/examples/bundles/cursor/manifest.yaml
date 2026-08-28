@@ -1,0 +1,7 @@
+format_version: "1"
+name: "cursor"
+version: "0.1.0"
+description: >
+  OpenAI-compatible facade showcase: invisible model backend for Cursor / IDE
+  agents. Client harness system prompt stays primary; Motet tools, workflows,
+  and §5c.1 handback are additive via cursor.backend.

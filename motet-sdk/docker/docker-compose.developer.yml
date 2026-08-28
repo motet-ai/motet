@@ -1,0 +1,23 @@
+# Developer Compose — use with pre-built Motet runtime images (ADR-0080).
+# Replace image references with your registry once images are published.
+#
+# services:
+#   redis:
+#     image: valkey/valkey:8.0-alpine
+#     ports: ["6379:6379"]
+#   postgres:
+#     image: pgvector/pgvector:pg17
+#     ...
+#   api:
+#     image: ghcr.io/motet-ai/motet-runtime/api:latest
+#     ...
+#   worker:
+#     image: ghcr.io/motet-ai/motet-runtime/worker:latest
+#     volumes:
+#       - ./bundles:/bundles
+#   worker-lifecycle:
+#     image: ghcr.io/motet-ai/motet-runtime/worker-lifecycle:latest
+#     ...
+#
+# Start: docker-compose -f docker/docker-compose.developer.yml up -d
+# Stop:  docker-compose -f docker/docker-compose.developer.yml down

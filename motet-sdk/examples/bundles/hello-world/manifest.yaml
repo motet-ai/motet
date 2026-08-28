@@ -1,0 +1,4 @@
+format_version: "1"
+name: "hello-world"
+version: "0.6.0"
+description: "Test bundle with a simple hello_world command for smoke-testing bundle deployment."

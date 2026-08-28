@@ -1,0 +1,100 @@
+# news_aggregation — browser-assisted news aggregation workflow for examples.
+#
+# Demonstrates a multi-step pipeline:
+#   1. Discover candidate source URLs
+#   2. Fetch article content with a browser-capable tool
+#   3. Cluster similar stories
+#   4. Build a concise digest
+
+workflow_id: news_aggregation
+name: News Aggregation
+output_field: digest_markdown
+description: >
+  Aggregate news for a topic by fetching major outlet pages, clustering stories, and
+  building a formatted digest. Use for requests like "get news about X" or "latest
+  headlines on Y". Defaults to top headlines when no topic is given.
+
+  RESULT: When this workflow completes, the build_digest step produces a
+  digest_markdown field containing a fully formatted, ready-to-present news summary.
+  Present digest_markdown directly to the user. Do NOT call web_search or any other
+  tool afterward — the digest is self-contained and complete.
+
+input_parameters:
+  topic:
+    type: string
+    description: Topic to aggregate (e.g., AI regulation, global markets). Defaults to top headlines.
+    default: "top headlines"
+  max_sources:
+    type: integer
+    description: Maximum number of source URLs to fetch.
+    default: 6
+  fetch_tool_name:
+    type: string
+    description: Browser-capable tool or workflow used to fetch page content.
+    default: "core.http_get_browser"
+  max_chars:
+    type: integer
+    description: Maximum content characters to retain per source.
+    default: 3500
+  min_overlap_terms:
+    type: integer
+    description: Keyword overlap threshold for clustering search articles (front pages are never merged).
+    default: 4
+  include_source_links:
+    type: boolean
+    description: Include source links in digest output.
+    default: true
+  max_items:
+    type: integer
+    description: Maximum digest items to return.
+    default: 5
+  request_timeout_seconds:
+    type: number
+    description: Per-source browser fetch timeout in seconds. Keep well below core.map's internal timeout.
+    default: 40
+
+steps:
+  discover_sources:
+    step_id: discover_sources
+    command_type: get-news.discover_sources
+    description: "Select source URLs for the requested topic."
+    parameters:
+      topic: "{{topic}}"
+      max_sources: "{{max_sources}}"
+    dependencies: []
+
+  fetch_articles:
+    step_id: fetch_articles
+    command_type: get-news.fetch_articles
+    description: "Fetch article text/metadata from discovered source URLs."
+    parameters:
+      topic: "{{topic}}"
+      sources: "{{discover_sources.sources}}"
+      fetch_tool_name: "{{fetch_tool_name}}"
+      max_chars: "{{max_chars}}"
+      request_timeout_seconds: "{{request_timeout_seconds}}"
+    dependencies:
+      - discover_sources
+
+  cluster_articles:
+    step_id: cluster_articles
+    command_type: get-news.cluster_articles
+    description: "Cluster similar stories across outlets."
+    parameters:
+      topic: "{{topic}}"
+      articles: "{{fetch_articles.articles}}"
+      min_overlap_terms: "{{min_overlap_terms}}"
+    dependencies:
+      - fetch_articles
+
+  build_digest:
+    step_id: build_digest
+    command_type: get-news.build_digest
+    description: "Build a readable digest from clustered stories."
+    parameters:
+      topic: "{{topic}}"
+      clusters: "{{cluster_articles.clusters}}"
+      include_source_links: "{{include_source_links}}"
+      max_items: "{{max_items}}"
+    dependencies:
+      - cluster_articles

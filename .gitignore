@@ -1,0 +1,163 @@
+# OS / Editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+
+# Build / Dist
+build/
+dist/
+*.egg-info/
+
+# Local data
+.local-backups/
+.motet/
+.poc-exec-tmp/
+traces/
+chroma_db/
+bm25.pkl
+bm25_*.pkl
+task_info_*.json
+tests/bundles/runs/
+
+# Env / Secrets
+.env
+.env.*
+*.key
+*.pem
+tls/
+# OS/macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+.venv-inference/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Packaging / build
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Test / coverage / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.tox/
+.nox/
+.pyre/
+.pytype/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Logs and temp
+*.log
+logs/
+tmp/
+
+# IDE/editor
+.idea/
+.vscode/
+.history/
+
+# Environment & secrets
+.env
+.env.*
+*.env
+secrets.*
+*.key
+*.pem
+*.crt
+
+# Docs build output
+docs/_build/
+site/
+
+# Test temp files
+tests/tmp*
+
+# Celery Beat schedule database
+celerybeat-schedule*
+
+# MCP credential directories
+.google_workspace_credentials/
+.mcp_credentials/
+
+# Local model files (GGUF, etc.)
+models/
+model_cache/
+
+# ADR-0064 implementation: `motet/core/models/` is source code and must be tracked.
+# Note: `models/` above ignores any directory named "models" at any depth, so we explicitly unignore.
+!motet/core/models/
+!motet/core/models/**
+!tests/unit/core/models/
+!tests/unit/core/models/**
+
+# Re-ignore caches inside the unignored models subtree
+motet/core/models/**/__pycache__/
+motet/core/models/**/*.py[cod]
+tests/unit/core/models/**/__pycache__/
+tests/unit/core/models/**/*.py[cod]
+motet/core/models/**/.pytest_cache/
+motet/core/models/**/.mypy_cache/
+
+# Node artifacts
+node_modules/
+
+# Test bundle repos (local dev only — contain embedded .git directories)
+# The old top-level directory is no longer used; bundle sources now live in
+# tests/bundles/ (committed) and the initialised repos go in tests/bundles/.repos/
+# which is gitignored here.
+test_bundles/
+tests/bundles/.repos/
+tests/bundles/**/__pycache__/
+tests/bundles/**/*.py[cod]
+/motet/interfaces/frontend/apps/ops-dashboard/.vite/deps
+.claude/
+
+# Temporary files
+.tmp*

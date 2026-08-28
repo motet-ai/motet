@@ -1,0 +1,6 @@
+# Proprietary / source-available Anthropic document skills — fetch locally only.
+# Do not commit these into Motet (redistribution is not permitted by their LICENSE.txt).
+skills/pdf/
+skills/docx/
+skills/pptx/
+skills/xlsx/

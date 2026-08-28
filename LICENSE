@@ -1,0 +1,13 @@
+This repository contains multiple packages, each with its own license:
+
+1. motet-sdk (package under motet-sdk/)
+   Licensed under the Apache License, Version 2.0.
+   See motet-sdk/LICENSE for the full text.
+
+2. motet (runtime package under motet/)
+   Licensed under the Functional Source License, Version 1.1 (FSL-1.1-ALv2),
+   or a commercial license. Converts to Apache 2.0 two years after each
+   version is made available. See motet/LICENSE for the full FSL terms.
+
+Third-party and bundled component licenses are documented in NOTICES.
+Regenerate with: python scripts/generate_notices.py

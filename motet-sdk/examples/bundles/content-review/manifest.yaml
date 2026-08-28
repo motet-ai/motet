@@ -1,0 +1,4 @@
+format_version: "1"
+name: "content-review"
+version: "0.1.0"
+description: "Multi-perspective content review pipeline demonstrating motet.join() with different commands, motet.maybe() for optional steps, and sequential motet.do() chains."

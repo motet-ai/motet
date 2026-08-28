@@ -1,0 +1,13 @@
+format_version: "1"
+name: "roundtable"
+version: "0.1.0"
+description: >
+  Facilitator pattern example. One agent (roundtable.facilitator) chooses who
+  speaks next by calling an invite tool, so speaker selection is decided by the
+  model at runtime rather than declared up front. Repeated invites across the
+  agentic loop produce discussion rounds, and a conversation-scoped transcript
+  gives every participant a shared channel. Composed entirely from existing
+  primitives: agents.turn, a bundle tool, and the agentic loop.
+load_order:
+  - config
+  - tools

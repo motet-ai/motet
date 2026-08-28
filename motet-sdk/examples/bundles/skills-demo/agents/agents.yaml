@@ -1,0 +1,35 @@
+agents:
+  # Avoid agent_id "main" — that short id collides with other example bundles
+  # (e.g. langfuse-cms.prompt-manager) in the global agent alias map.
+  - agent_id: "skills"
+    aliases: ["skills-demo"]
+    display_name: "Skills Demo"
+    description: >
+      Agent Skills demo: Apache Anthropic reference skills plus a Motet
+      runner skill. Optional document skills can be fetched locally (gitignored).
+    allowed_roles: ["*"]
+    system_prompt: >-
+      You are a helpful assistant with Motet Agent Skills. The model sees a
+      compact catalog until you call core.activate_skill with the skill id
+      (for example skills-demo.brand-guidelines) and then follow those
+      instructions. For a quick execution smoke test, call the runner tool
+      skills-demo.basic-script-skill.echo with a text argument and report the
+      JSON result. Prefer activated skill guidance over inventing workflows.
+    tool_filter:
+      mode: "discovery"
+      required_tools:
+        - "core.activate_skill"
+        - "skills-demo.basic-script-skill.echo"
+    skill_ids:
+      - "skills-demo.algorithmic-art"
+      - "skills-demo.basic-script-skill"
+      - "skills-demo.brand-guidelines"
+      - "skills-demo.frontend-design"
+      - "skills-demo.theme-factory"
+    skill_mode: "discovery"
+    skill_max_per_turn: 3
+    turn_hooks:
+      conversation_analysis: "core.conversation_analysis"
+      memory_reset: "core.memory_reset"
+      context_prepare: "core.prepare_context"
+      finalize: "core.finalize_turn"

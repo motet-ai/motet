@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Success</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .container {
+            background: white;
+            padding: 3rem;
+            border-radius: 1rem;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            max-width: 500px;
+        }
+        h1 { color: #2d3748; margin-top: 0; }
+        .success-icon { font-size: 4rem; margin-bottom: 1rem; }
+        .details { color: #4a5568; margin: 1.5rem 0; line-height: 1.6; }
+        .provider-name { font-weight: bold; color: #667eea; }
+        .closing-message {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background: #e6fffa;
+            border-radius: 0.5rem;
+            color: #234e52;
+            font-size: 0.9rem;
+        }
+        .manual-close { display: none; margin-top: 1.5rem; }
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 2rem;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 0.5rem;
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+        .btn:hover { background: #5a67d8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">✅</div>
+        <h1>Authorization Successful!</h1>
+        <div class="details">
+            <span class="provider-name">{{ display_name }}</span> has been authorized.
+            <br><br>
+            OAuth tokens have been securely stored.
+        </div>
+        <div class="closing-message" id="closing-message">
+            This window will close automatically...
+        </div>
+        <div class="manual-close" id="manual-close">
+            <button class="btn" onclick="window.close()">Close Window</button>
+            <br><br>
+            <a href="/ops" style="color: #667eea;">Or return to dashboard</a>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            // Message to send to opener
+            const message = {
+                type: 'oauth_complete',
+                provider: '{{ provider }}',
+                display_name: '{{ display_name }}',
+                success: true,
+                timestamp: new Date().toISOString()
+            };
+
+            if (window.opener && !window.opener.closed) {
+                try {
+                    // Post message to opener (chat UI or dashboard)
+                    window.opener.postMessage(message, '*');
+                    console.log('Posted oauth_complete message to opener');
+
+                    // Show closing message
+                    document.getElementById('closing-message').style.display = 'block';
+
+                    // Auto-close after delay
+                    setTimeout(() => {
+                        window.close();
+                    }, 2000);
+
+                    // Fallback: if window doesn't close, show manual button
+                    setTimeout(() => {
+                        if (!window.closed) {
+                            document.getElementById('closing-message').style.display = 'none';
+                            document.getElementById('manual-close').style.display = 'block';
+                        }
+                    }, 3000);
+
+                } catch (e) {
+                    console.error('Failed to post message to opener:', e);
+                    document.getElementById('closing-message').style.display = 'none';
+                    document.getElementById('manual-close').style.display = 'block';
+                }
+            } else {
+                // No opener (direct navigation or opener closed)
+                console.log('No opener window, showing manual close');
+                document.getElementById('closing-message').style.display = 'none';
+                document.getElementById('manual-close').style.display = 'block';
+            }
+        })();
+    </script>
+</body>
+</html>
+

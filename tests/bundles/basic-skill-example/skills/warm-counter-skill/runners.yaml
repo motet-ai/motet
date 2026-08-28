@@ -1,0 +1,31 @@
+# ADR-0106 Slice B demo: a stateful-lifetime runner.
+#
+# `lifetime: stateful` tells Motet to:
+#   1. Lazily create a per-(tenant, conversation, image_stack) container.
+#   2. Import scripts/counter.py *once* into a long-lived in-container
+#      Python supervisor.
+#   3. Dispatch every call as `handle(params)` against that supervisor,
+#      so module-level state (the counter) persists across calls.
+#
+# Compare with basic-script-skill/runners.yaml, which uses
+# `lifetime: ephemeral` (hermetic per-call execution; counters reset every
+# turn).
+
+runners:
+  - name: counter
+    description: |
+      Increment an in-memory counter and echo a label. Demonstrates
+      that module-level state persists across calls within a
+      conversation when `lifetime: stateful` is set. An ephemeral equivalent
+      would lose the counter every call.
+    script: scripts/counter.py
+    interpreter: python3
+    image_stack: python-minimal
+    lifetime: stateful
+    timeout_seconds: 30
+    network: none
+    args:
+      label:
+        type: string
+        description: Optional label echoed back alongside the counter value.
+        required: false

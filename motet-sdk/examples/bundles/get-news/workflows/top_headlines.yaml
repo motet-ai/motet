@@ -1,0 +1,97 @@
+# top_headlines — no-arg workflow alias for broad "get news" requests.
+#
+# This workflow intentionally hardcodes the topic so the model can invoke it
+# without asking follow-up questions.
+#
+# MAINTENANCE NOTE: This workflow mirrors the step structure of news_aggregation.yaml
+# with topic hardcoded to "top headlines". If steps are added or changed in
+# news_aggregation.yaml, update this file too.
+
+workflow_id: top_headlines
+name: Top Headlines
+output_field: digest_markdown
+description: >
+  Get a digest of top headlines across AP, BBC, Reuters, Guardian, NPR, and more.
+  Use for broad requests like "get news", "latest news", or "what is happening today".
+  Requires no parameters — call it immediately without asking the user for a topic.
+
+  RESULT: When this workflow completes, the build_digest step produces a
+  digest_markdown field containing a fully formatted, ready-to-present news summary.
+  Present digest_markdown directly to the user. Do NOT call web_search or any other
+  tool afterward — the digest is self-contained and complete.
+
+input_parameters:
+  max_sources:
+    type: integer
+    description: Maximum number of source URLs to fetch.
+    default: 6
+  fetch_tool_name:
+    type: string
+    description: Browser-capable tool or workflow used to fetch page content.
+    default: "core.http_get_browser"
+  max_chars:
+    type: integer
+    description: Maximum content characters to retain per source.
+    default: 3500
+  min_overlap_terms:
+    type: integer
+    description: Keyword overlap threshold for clustering search articles (front pages are never merged).
+    default: 4
+  include_source_links:
+    type: boolean
+    description: Include source links in digest output.
+    default: true
+  max_items:
+    type: integer
+    description: Maximum digest items to return.
+    default: 5
+  request_timeout_seconds:
+    type: number
+    description: Per-source browser fetch timeout in seconds. Keep well below core.map's internal timeout.
+    default: 40
+
+steps:
+  discover_sources:
+    step_id: discover_sources
+    command_type: get-news.discover_sources
+    description: "Select source URLs for top headlines."
+    parameters:
+      topic: "top headlines"
+      max_sources: "{{max_sources}}"
+    dependencies: []
+
+  fetch_articles:
+    step_id: fetch_articles
+    command_type: get-news.fetch_articles
+    description: "Fetch article text/metadata from discovered source URLs."
+    parameters:
+      topic: "top headlines"
+      sources: "{{discover_sources.sources}}"
+      fetch_tool_name: "{{fetch_tool_name}}"
+      max_chars: "{{max_chars}}"
+      request_timeout_seconds: "{{request_timeout_seconds}}"
+    dependencies:
+      - discover_sources
+
+  cluster_articles:
+    step_id: cluster_articles
+    command_type: get-news.cluster_articles
+    description: "Cluster similar stories across outlets."
+    parameters:
+      topic: "top headlines"
+      articles: "{{fetch_articles.articles}}"
+      min_overlap_terms: "{{min_overlap_terms}}"
+    dependencies:
+      - fetch_articles
+
+  build_digest:
+    step_id: build_digest
+    command_type: get-news.build_digest
+    description: "Build a readable digest from clustered stories."
+    parameters:
+      topic: "top headlines"
+      clusters: "{{cluster_articles.clusters}}"
+      include_source_links: "{{include_source_links}}"
+      max_items: "{{max_items}}"
+    dependencies:
+      - cluster_articles

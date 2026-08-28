@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CLI login success</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 2rem; max-width: 640px; margin: 0 auto; }
+        h1 { color: #2d3748; }
+        .token-box { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; word-break: break-all; font-family: monospace; font-size: 0.85rem; margin: 1rem 0; }
+        .cmd { background: #2d3748; color: #e2e8f0; padding: 1rem; border-radius: 8px; font-family: monospace; margin: 1rem 0; }
+        .muted { color: #718096; font-size: 0.9rem; }
+        button { background: #4299e1; color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; margin-top: 0.5rem; }
+        button:hover { background: #3182ce; }
+    </style>
+</head>
+<body>
+    <div id="content">
+        <h1>CLI login successful</h1>
+        <p class="muted">Use this token with the Motet CLI. Run the command below (token is copied to clipboard when you click Copy):</p>
+        <div class="token-box" id="tokenDisplay"></div>
+        <div class="cmd" id="cmdDisplay"></div>
+        <button id="copyBtn">Copy command</button>
+        <p class="muted" style="margin-top: 1.5rem;">You can close this window after storing the token. The token will not be shown in the browser URL for security.</p>
+    </div>
+    <div id="noToken" style="display: none;">
+        <h1>No token in URL</h1>
+        <p class="muted">If you just logged in, the token should appear above. If you arrived here without logging in, run <code>motet-cli auth login</code> first.</p>
+    </div>
+    <script>
+        (function() {
+            var hash = window.location.hash || '';
+            var token = '';
+            if (hash.indexOf('token=') !== -1) {
+                var params = hash.substring(1).split('&');
+                for (var i = 0; i < params.length; i++) {
+                    var kv = params[i].split('=');
+                    if (kv[0] === 'token' && kv.length > 1) {
+                        token = decodeURIComponent(kv.slice(1).join('=').replace(/\+/g, ' '));
+                        break;
+                    }
+                }
+            }
+            if (token) {
+                document.getElementById('tokenDisplay').textContent = token.substring(0, 50) + '...';
+                var cmd = 'motet-cli auth store-token ' + token;
+                document.getElementById('cmdDisplay').textContent = cmd;
+                document.getElementById('copyBtn').onclick = function() {
+                    navigator.clipboard.writeText(cmd).then(function() {
+                        document.getElementById('copyBtn').textContent = 'Copied!';
+                    });
+                };
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+            } else {
+                document.getElementById('content').style.display = 'none';
+                document.getElementById('noToken').style.display = 'block';
+            }
+        })();
+    </script>
+</body>
+</html>

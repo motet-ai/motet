@@ -1,0 +1,59 @@
+# background_reflection — reflect-then-summarize pipeline.
+#
+# Demonstrates a 2-step workflow that can be run on-demand or targeted
+# by a schedule.  Step 1 generates a new insight, step 2 synthesizes
+# all accumulated insights into a summary.
+#
+# Pipeline:
+#   1. reflect       — read prior thinking, generate new insight, store in memory
+#   2. check_insights — synthesize all insights into a structured summary
+
+workflow_id: background_reflection
+name: Background Reflection
+output_field: summary
+description: >
+  Run one reflection cycle on a topic and then summarize all accumulated
+  background thinking.  Use for requests like "think about X and tell me
+  what you've got", "reflect on Y", or "what's your latest thinking on Z".
+
+  RESULT: When this workflow completes, the check_insights step produces a
+  summary field containing a structured synthesis of all insights.  Present
+  it directly to the user.  Insights are stored principal-scoped for later
+  recall via background-thinker.recall_insights.
+
+input_parameters:
+  topic:
+    type: string
+    description: The topic to reflect on and summarize.
+    required: true
+  provider:
+    type: string
+    description: LLM provider for reflection and synthesis.
+    default: "openai"
+  model_name:
+    type: string
+    description: LLM model name for reflection and synthesis.
+    default: "gpt-4o-mini"
+
+steps:
+  reflect:
+    step_id: reflect
+    command_type: background-thinker.reflect
+    description: "Generate a new insight by building on prior thinking."
+    parameters:
+      topic: "{{topic}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies: []
+
+  check_insights:
+    step_id: check_insights
+    command_type: background-thinker.check_insights
+    description: "Synthesize all accumulated insights into a structured summary."
+    parameters:
+      topic: "{{topic}}"
+      summarize: true
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies:
+      - reflect

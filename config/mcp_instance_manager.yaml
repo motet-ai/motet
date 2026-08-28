@@ -1,0 +1,382 @@
+# MCP Instance Manager Configuration (Option 3.5)
+#
+# This configuration defines MCP services managed by the Instance Manager.
+# Each service runs as a Python subprocess with MotetMCPProxy managing communication.
+
+# Redis connection for MCP stream proxy
+redis_url: "redis://localhost:6379/0"
+
+# Metrics and health endpoints
+metrics_port: 9090
+health_port: 9091
+
+# Logging configuration
+log_level: "INFO"
+
+# Cleanup and monitoring intervals
+cleanup_interval: 60  # seconds
+instance_timeout: 3600  # 1 hour for unused instances
+
+enable_on_demand_creator: false
+
+# MCP Services configuration
+services:
+  # Weather Service - Stateless, one identity-keyed instance (ADR-0058)
+  # Build local image once to avoid runtime npx/npm lock/cache failures:
+  #   docker build -t motet-weather-mcp:local -f docker/images/weather-mcp/Dockerfile .
+  - service_id: "weather"
+    transport: "stdio"  # Stdio transport (default)
+    exec_image: "motet-weather-mcp:local"
+    x-build:
+      dockerfile: "docker/images/weather-mcp/Dockerfile"
+      context: "."
+      ecr_repo: "weather-mcp"
+    command: "mcp-weather"
+    args: []
+    env:
+      ACCUWEATHER_API_KEY: "${ACCUWEATHER_API_KEY}"
+    
+    # Isolation + lifecycle (ADR-0058)
+    state_model: "stateless"
+    credential_scope: "motet"
+    visibility: "motet"
+    lifecycle_duration: "permanent"
+    # One identity-keyed instance (ADR-0058). Replica pools are not supported.
+    
+    # Health and monitoring
+    health_check_interval: 10
+    restart_on_failure: true
+    instance_timeout: 3600
+  
+  # Playwright Service - Stateful, conversation-scoped (created on demand)
+  # Microsoft @playwright/mcp (browser_* tools). Build local image once:
+  #   docker build -t motet-playwright-mcp:local -f docker/images/playwright-mcp/Dockerfile .
+  - service_id: "playwright"
+    transport: "stdio"  # Stdio transport (default)
+    exec_image: "motet-playwright-mcp:local"
+    x-build:
+      dockerfile: "docker/images/playwright-mcp/Dockerfile"
+      context: "."
+      ecr_repo: "playwright-mcp"
+    command: "/usr/local/bin/start-playwright-mcp.sh"
+    args: []
+    env:
+      # Headless + image-responses are CLI flags in start-playwright-mcp.sh.
+      # Desktop Chrome UA/viewport come from /etc/playwright-mcp/config.json
+      # (baked into the image; override via args: ["--config", "..."] if needed).
+      PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright"
+    
+    # Isolation + lifecycle (ADR-0058)
+    state_model: "stateful"
+    credential_scope: "motet"
+    visibility: "user"
+    lifecycle_duration: "conversation"
+    shared_state_allowed: false
+    # Conversation-scoped; created on demand. Do not replica-scale.
+    
+    # Health and monitoring
+    health_check_interval: 10
+    restart_on_failure: true
+    instance_timeout: 1800  # 30 minutes for stateful instances
+  
+  
+  # Web Search Service - Multi-engine web search (no API keys required!)
+  # Repository: https://github.com/mrkrsl/web-search-mcp
+  # Provides: full-web-search, get-web-search-summaries, search-web-page
+  # Engines: Bing, Brave Search, DuckDuckGo (automatic fallback)
+  # - service_id: "web-search"
+  #   transport: "stdio"
+  #   command: "node"
+  #   args:
+  #     - "/app/external/web-search-mcp/dist/index.js"
+  #   working_dir: "/app/external/web-search-mcp"  # Set working directory so Node.js can find node_modules/playwright
+  #   env:
+  #     PLAYWRIGHT_BROWSERS_PATH: "/tmp/playwright-browsers"
+  #     BROWSER_HEADLESS: "true"
+  #     DEBUG_BING_SEARCH: "true"
+  #     DEBUG_BROWSER_LIFECYCLE: "true"
+  #     DEBUG_BRAVE_SEARCH: "true"
+  #     RELEVANCE_THRESHOLD: "0.2"  # Lower threshold to accept more results (default is 0.3)
+  #     ENABLE_RELEVANCE_CHECKING: "true"  # Keep enabled but with lower threshold
+  #
+  #   # Isolation + lifecycle (ADR-0058)
+  #   state_model: "stateless"
+  #   credential_scope: "motet"
+  #   visibility: "motet"
+  #   lifecycle_duration: "permanent"
+  #   instances: 1
+  #
+  #   # Health and monitoring
+  #   health_check_interval: 15
+  #   restart_on_failure: true
+  #   instance_timeout: 3600  # 1 hour
+
+  # Everything Test Service - Streamable HTTP reference server
+  # Maintained by modelcontextprotocol; purpose-built to exercise MCP protocol features
+  # (tools, resources, prompts, elicitation, sampling) for client testing.
+  # Build local image once to avoid runtime npx/npm lock/cache failures:
+  #   docker build -t motet-everything-http-test-mcp:local -f docker/images/everything-http-test-mcp/Dockerfile .
+  - service_id: "everything_http_test"
+    transport: "http"
+    start_server: true
+    exec_image: "motet-everything-http-test-mcp:local"
+    x-build:
+      dockerfile: "docker/images/everything-http-test-mcp/Dockerfile"
+      context: "."
+      ecr_repo: "everything-http-test-mcp"
+    command: "mcp-server-everything"
+    args:
+      - "streamableHttp"
+    env:
+      PORT: "3301"
+    base_url: "http://127.0.0.1:3301/mcp"
+    port: 3301
+    streamable_http_sse: true
+    startup_timeout_seconds: 90
+    startup_probe_interval_seconds: 2
+
+    # Isolation + lifecycle (ADR-0058)
+    state_model: "stateless"
+    credential_scope: "motet"
+    visibility: "motet"
+    lifecycle_duration: "permanent"
+    # Keep only the discovery instance for this local test server.
+    # A second instance would try to bind the same localhost port again.
+    instances: 0
+
+    # Health and monitoring
+    health_check_interval: 10
+    restart_on_failure: true
+    instance_timeout: 3600
+  
+  # Slack Service - Slack workspace integration
+  # Repository: https://github.com/zencoderai/slack-mcp-server
+  # Provides: Message posting, channel management, reactions, user profiles
+  # - service_id: "slack"
+  #   transport: "stdio"
+  #   command: "npx"
+  #   args:
+  #     - "-y"
+  #     - "@zencoderai/slack-mcp-server"
+  #   env:
+  #     SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+  #     SLACK_TEAM_ID: "${SLACK_TEAM_ID}"
+  #     # Optional: Pre-defined channel IDs (comma-separated)
+  #     # SLACK_CHANNEL_IDS: "C123456,C789012"
+  #
+  #   # Isolation + lifecycle (ADR-0058)
+  #   state_model: "stateful"
+  #   credential_scope: "motet"
+  #   visibility: "motet"
+  #   lifecycle_duration: "permanent"
+  #   instances: 1
+  #   shared_state_allowed: true
+  #
+  #   # Health and monitoring
+  #   health_check_interval: 15
+  #   restart_on_failure: true
+  #   instance_timeout: 3600  # 1 hour
+  #
+  #   # Authentication configuration (ADR-0057)
+  #   # Note: Slack uses OAuth but typically bot tokens are pre-configured
+  #   # Set to api_key since bot tokens are admin-configured, not user-prompted
+  #   auth:
+  #     type: "api_key"
+  #     vault_credential_key: "slack_bot_token"
+  #     env_var: "SLACK_BOT_TOKEN"
+  #     token_field: "token"
+  #     display_name: "Slack"
+  #     description: "Post messages and interact with Slack workspaces"
+  
+  # Google Workspace Service - Bearer Token Mode
+  # Requires a compatible Google Workspace MCP image with bearer token authentication.
+  # Public snapshots do not include private MCP fork source.
+  # Provides: 60+ tools across Gmail, Drive, Calendar, Docs, Sheets, Slides, Chat, Forms, Tasks, Search
+  # exec_image: no public vendor image for this fork; build from repo root:
+  #   docker build -t motet-google-workspace-mcp:local -f docker/images/google-workspace-mcp/Dockerfile .
+  - service_id: "google_workspace"
+    transport: "stdio"
+    exec_image: "motet-google-workspace-mcp:local"
+    x-build:
+      dockerfile: "docker/images/google-workspace-mcp/Dockerfile"
+      context: "."
+      ecr_repo: "google-workspace-mcp"
+    command: "python"
+    args:
+      - "/app/main.py"
+      - "--bearer-token-mode"
+      - "--tools"
+      - "gmail"
+      - "drive"
+      - "docs"
+      - "sheets"
+      - "slides"
+    env:
+      # Bearer token fetched from vault by HTTPMCPTransport
+      GOOGLE_BEARER_TOKEN: "${GOOGLE_BEARER_TOKEN}"
+      # Single-user mode: bypass session mapping, use bearer token for all requests
+      #USER_GOOGLE_EMAIL: "matt@motet.dev"
+      #OAUTHLIB_INSECURE_TRANSPORT: "1"  # For development
+    
+    # Isolation + lifecycle (ADR-0058)
+    state_model: "stateless"
+    credential_scope: "user"
+    visibility: "user"
+    lifecycle_duration: "idle_timeout"
+    instances: 1
+    
+    # Health and monitoring
+    health_check_interval: 30
+    restart_on_failure: true
+    instance_timeout: 3600  # 1 hour (fallback, per_user_config takes precedence)
+    
+    # Authentication configuration (ADR-0057)
+    # Declares OAuth requirements for user authorization prompt
+    auth:
+      type: "oauth2"
+      provider: "google"
+      vault_credential_key: "oauth:tokens:google_workspace"  # Base key - actual key built with ADR-0058 format (format: oauth:tokens:{server_id}:{tenant_id}:{motet_id}:{principal_id})
+      env_var: "GOOGLE_BEARER_TOKEN"
+      token_field: "access_token"
+      display_name: "Google Workspace"
+      description: "Access Gmail, Drive, Calendar, Docs, and other Google services"
+      scopes:
+        - "https://www.googleapis.com/auth/gmail.send"
+        - "https://www.googleapis.com/auth/gmail.readonly"
+        - "https://www.googleapis.com/auth/calendar"
+        - "https://www.googleapis.com/auth/drive"
+        - "https://www.googleapis.com/auth/documents"
+        - "https://www.googleapis.com/auth/spreadsheets"
+      auth_url: "https://accounts.google.com/o/oauth2/v2/auth"
+      token_url: "https://oauth2.googleapis.com/token"
+      revoke_url: "https://oauth2.googleapis.com/revoke"  # OAuth token revocation endpoint
+      tokeninfo_url: "https://www.googleapis.com/oauth2/v3/tokeninfo"  # Token validation endpoint (optional, for active token validation)
+
+    # Optional tool presentation hints (custom extension).
+    # These are consumed during worker-side MCP tool registration to attach
+    # deterministic rendering metadata to tools in the ToolRegistry.
+    #
+    # This will later allow agentic_loop to skip the "final LLM" formatting call
+    # for tools that already return user-facing output.
+    presentation:
+      default:
+        requires_llm: true
+        user_facing: false
+      tools:
+        list_docs_in_folder:
+          requires_llm: false
+          user_facing: true
+          content_kind: "list"
+
+
+
+  # Zoom Service (User-scoped endpoints) - OpenAPI Adapter (ADR-0060)
+  # Provides: /users/{userId} endpoints (e.g., list meetings for "me") with user OAuth scopes
+  #
+  # NOTE:
+  # - The official Meetings spec uses account-scoped endpoints like:
+  #   /accounts/{accountId}/users/{userId}/meetings (requires meeting:master / meeting:read:list_meetings:master)
+  # - Many common "my meetings" flows need the user-scoped endpoint:
+  #   /users/{userId}/meetings (works with standard user scopes)
+  # https://developers.zoom.us/api-hub/meetings/ma/master.json
+  # https://api.apis.guru/v2/specs/zoom.us/2.0.0/openapi.json
+  # exec_image: lightweight OpenAPI adapter sidecar (build: docker build -t motet-openapi-adapter-mcp:local
+  #   -f docker/images/openapi-adapter-mcp/Dockerfile .). Same argv as worker filesystem layout.
+  - service_id: "zoom"
+    transport: "stdio"
+    exec_image: "motet-openapi-adapter-mcp:local"
+    x-build:
+      dockerfile: "docker/images/openapi-adapter-mcp/Dockerfile"
+      context: "."
+      ecr_repo: "openapi-adapter-mcp"
+    command: "python"
+    args:
+      - "/app/motet/core/tools/mcp_adapters/openapi_adapter_server.py"
+      - "--openapi-url"
+      - "https://api.apis.guru/v2/specs/zoom.us/2.0.0/openapi.json"
+      - "--base-url"
+      - "https://api.zoom.us/v2"
+      - "--tool-prefix"
+      - "zoom"
+      - "--name"
+      - "Zoom API (User endpoints)"
+      # Tool allowlist (deny-by-default when any allowlist is provided)
+      # Allow recordings list (safety net by endpoint glob + explicit operationId)
+      - "--allow-endpoint"
+      - "GET /users/*/recordings"
+      - "--allow-operation-id"
+      - "recordingsList"
+      - "--disable-output-validation"
+    # No env mapping needed - vault sets MCP_ACCESS_TOKEN directly via auth.env_var
+
+    state_model: "stateful"
+    credential_scope: "user"
+    visibility: "user"
+    lifecycle_duration: "idle_timeout"
+    idle_timeout_seconds: 1800  # 30 minutes
+    instances: 1
+
+    auth:
+      type: "oauth2"
+      provider: "zoom"
+      vault_credential_key: "oauth:tokens:zoom"
+      env_var: "MCP_ACCESS_TOKEN"  # Set directly - adapter expects this env var
+      token_field: "access_token"
+      # Authenticated download hint for oauth_download_url_with_token:
+      # Zoom download URLs commonly require ?access_token=... rather than Authorization header.
+      token_transport: "query_param"
+      token_query_param: "access_token"
+      display_name: "Zoom (User)"
+      description: "Manage user-scoped meetings and recordings"
+      scopes:
+        - "meeting:read:meeting"  
+        - "meeting:read:summary"
+        - "meeting:read:past_meeting"
+        - "meeting:read:list_past_instances"
+        - "meeting:read:list_past_participants"
+        - "meeting:read:list_meetings"
+        - "meeting:read:list_upcoming_meetings"
+        - "meeting:read:ai_companion"
+        - "archiving:read:list_archived_files"
+        - "cloud_recording:read:recording_analytics_details"
+        - "cloud_recording:read:list_user_recordings"
+        - "cloud_recording:read:list_recording_files"
+        - "cloud_recording:read:recording"
+        - "cloud_recording:read:meeting_transcript"
+      auth_url: "https://zoom.us/oauth/authorize"
+      token_url: "https://zoom.us/oauth/token"
+      revoke_url: "https://zoom.us/oauth/revoke"
+
+  # GitHub Service - Official GitHub MCP (ADR-0122)
+  # Image: ghcr.io/github/github-mcp-server (same as docker-compose.github-mcp.yml for IDE).
+  # Vault mapping already exists for mcp_server_id "github" (github_personal_token).
+  # Official server expects GITHUB_PERSONAL_ACCESS_TOKEN; set via auth.env_var.
+  # Toolsets limited to issues/PRs/repos for the self-hosted development agent.
+  - service_id: "github"
+    transport: "stdio"
+    exec_image: "ghcr.io/github/github-mcp-server:latest"
+    # Image ENTRYPOINT is /server/github-mcp-server; Motet schema requires explicit command.
+    command: "/server/github-mcp-server"
+    args: ["stdio"]
+    env:
+      GITHUB_TOOLSETS: "issues,pull_requests,repos"
+      # Do not set GITHUB_PERSONAL_ACCESS_TOKEN here as "${...}" — MotetMCPProxy
+      # merges YAML env over the manager process env, and unexpanded templates
+      # would overwrite a real token. Pass the token on the mcp-manager container
+      # (docker-compose) so discovery inherits it via os.environ.copy().
+    state_model: "stateless"
+    credential_scope: "motet"
+    visibility: "user"
+    lifecycle_duration: "permanent"
+    instances: 1
+    health_check_interval: 10
+    restart_on_failure: true
+    instance_timeout: 3600
+    auth:
+      type: "api_key"
+      vault_credential_key: "github_personal_token"
+      env_var: "GITHUB_PERSONAL_ACCESS_TOKEN"
+      token_field: "access_token"
+      display_name: "GitHub"
+      description: "Read issues/repos and open pull requests for Motet development workflows"
+

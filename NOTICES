@@ -1,0 +1,359 @@
+Motet Third-Party Notices
+=========================
+
+Generated: 2026-07-10
+Generator: scripts/generate_notices.py
+
+This file documents third-party software components used by Motet runtime
+images, services, and supporting repositories. Motet's own license terms
+are described in LICENSE, LICENSE-FSL, COMMERCIAL_LICENSE.md, and
+motet-sdk/LICENSE — this file covers supporting / third-party material only.
+
+Regenerate after dependency changes:
+
+    python scripts/generate_notices.py
+
+## Summary
+
+- Python packages (merged across requirement sets): 228
+- Packages with GPL/AGPL/LGPL/SSPL/RSAL license expressions: 4
+
+Requirement sets scanned:
+- Canonical runtime (requirements.txt)
+- Worker image (docker/images/worker/requirements.txt)
+- Local inference image (docker/images/local-inference/requirements.txt)
+- Embedding server image (docker/images/embedding-server/requirements.txt)
+- OpenAPI adapter MCP image (docker/images/openapi-adapter-mcp/requirements.txt)
+
+License expression counts (as reported by pip-licenses):
+
+| Count | License expression |
+|------:|--------------------|
+| 41 | MIT |
+| 39 | MIT License |
+| 29 | Apache Software License |
+| 29 | BSD License |
+| 24 | Apache-2.0 |
+| 22 | BSD-3-Clause |
+| 4 | BSD-2-Clause |
+| 2 | Apache Software License; MIT License |
+| 2 | ISC License (ISCL) |
+| 2 | LGPL-3.0-only |
+| 2 | Python Software Foundation License |
+| 2 | ZPL-2.1 |
+| 1 | 3-Clause BSD License |
+| 1 | Apache 2.0 License |
+| 1 | Apache License 2.0 |
+| 1 | Apache License, Version 2.0 |
+| 1 | Apache Software License; BSD License |
+| 1 | Apache Software License; GNU General Public License (GPL); GNU Library or Lesser General Public License (LGPL) |
+| 1 | Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT |
+| 1 | Apache-2.0 AND BSD-2-Clause |
+| 1 | Apache-2.0 AND CNRI-Python |
+| 1 | Apache-2.0 AND MIT |
+| 1 | Apache-2.0 OR BSD-2-Clause |
+| 1 | Apache-2.0 OR BSD-3-Clause |
+| 1 | Apache-2.0 OR MIT |
+| 1 | BSD |
+| 1 | BSD 3-clause |
+| 1 | BSD 3-Clause License |
+| 1 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 |
+| 1 | BSD-3-Clause, Apache-2.0, dependency licenses |
+| 1 | EPL-2.0 OR BSD-3-Clause |
+| 1 | GNU General Public License v2 (GPLv2) |
+| 1 | MIT AND PSF-2.0 |
+| 1 | MIT OR Apache-2.0 |
+| 1 | MIT-0 |
+| 1 | MIT-CMU |
+| 1 | Mozilla Public License 2.0 (MPL 2.0) |
+| 1 | MPL-2.0 |
+| 1 | MPL-2.0 AND (Apache-2.0 OR MIT) |
+| 1 | MPL-2.0 AND MIT |
+| 1 | PSF-2.0 |
+| 1 | The Unlicense (Unlicense) |
+
+## Copyleft and Restricted Python Dependencies
+
+These packages merit explicit review before redistribution or managed hosting.
+See ADR-0080 (Dependency License Audit) for Motet's compatibility assessment.
+
+| Package | Version | License | Requirement sets |
+|---------|---------|---------|------------------|
+| odfpy | 1.4.1 | Apache Software License; GNU General Public License (GPL); GNU Library or Lesser General Public License (LGPL) | Canonical runtime (requirements.txt) |
+| psycopg | 3.3.4 | LGPL-3.0-only | Canonical runtime (requirements.txt) |
+| psycopg-binary | 3.3.4 | LGPL-3.0-only | Canonical runtime (requirements.txt) |
+
+## Infrastructure Services (Separate Processes)
+
+These components are not Python packages in this repository but are used by
+Motet deployments. Pin versions in Docker Compose / infrastructure specs.
+
+| Service | License | Notes |
+|---------|---------|-------|
+| Valkey (Redis-compatible broker) | BSD-3-Clause | Required instead of Redis >= 7.4 (SSPL/RSPL). |
+| PostgreSQL | PostgreSQL License (permissive) | Primary relational store. |
+| pgvector | PostgreSQL / BSD-2-Clause | Vector extension for PostgreSQL. |
+| Keycloak | Apache 2.0 | Identity / OAuth provider in test and dev stacks. |
+| Tesseract OCR (system package) | Apache 2.0 | Used when OCR derivation is enabled. |
+
+## Vendored and Bundled Components
+
+| Component | Location | License | Notes |
+|-----------|----------|---------|-------|
+| web-search-mcp | external/web-search-mcp/ | MIT | See external/web-search-mcp/LICENSE. |
+| workspace-mcp | external/workspace-mcp/ | MIT | See external/workspace-mcp/LICENSE. |
+| Anthropic Agent Skills (test fixture) | tests/bundles/skills-vendor-demo/ | Mixed | See tests/bundles/skills-vendor-demo/THIRD_PARTY_SKILLS.md and per-skill LICENSE.txt. Internal testing only. |
+| Anthropic Agent Skills (SDK example, Apache) | motet-sdk/examples/bundles/skills-demo/skills/ | Apache-2.0 | See motet-sdk/examples/bundles/skills-demo/THIRD_PARTY_SKILLS.md and per-skill LICENSE.txt. Proprietary document skills are fetch-only (gitignored). |
+
+## Published Convenience Images
+
+The optional `python-office` image stack contains no Motet code. It
+aggregates unmodified Debian packages including copyleft components
+(Ghostscript AGPL-3.0, Poppler GPL-2.0, pandoc GPL-2.0+, LibreOffice
+MPL-2.0). The image bakes third-party notices and full package manifests
+under /usr/share/motet/; corresponding Debian source is available from
+https://snapshot.debian.org/. See docker/images/python-office/NOTICES.
+
+## Optional Native Codecs
+
+AVIF conversion uses Pillow's native libavif/dav1d support when
+`MOTET_ENABLE_AVIF_CONVERSION=1`. Default images do not include `pillow-heif`.
+HEIC/HEIF conversion stays off unless an operator installs `pillow-heif` and
+sets `MOTET_ENABLE_HEIC_HEIF_CONVERSION=1`. Official pillow-heif wheels vendor
+HEVC codecs under GPL/LGPL; review those licenses before enabling HEIC.
+See motet/core/media/README.md.
+
+## Python Package Inventory
+
+Merged transitive dependencies from all scanned requirement sets. License strings
+are reproduced as reported by installed package metadata (pip-licenses).
+
+| Package | Version | License | Project URL |
+|---------|---------|---------|-------------|
+| aiofiles | 25.1.0 | Apache Software License | https://github.com/Tinche/aiofiles |
+| aiohappyeyeballs | 2.7.1 | Python Software Foundation License | https://github.com/aio-libs/aiohappyeyeballs |
+| aiohttp | 3.14.1 | Apache-2.0 AND MIT | https://github.com/aio-libs/aiohttp |
+| aiosignal | 1.4.0 | Apache Software License | https://github.com/aio-libs/aiosignal |
+| alembic | 1.18.5 | MIT | https://alembic.sqlalchemy.org |
+| amqp | 5.3.1 | BSD License | http://github.com/celery/py-amqp |
+| annotated-doc | 0.0.4 | MIT | https://github.com/fastapi/annotated-doc |
+| annotated-types | 0.7.0 | MIT License | https://github.com/annotated-types/annotated-types |
+| anthropic | 0.116.0 | MIT License | https://github.com/anthropics/anthropic-sdk-python |
+| anyio | 4.14.1 | MIT | https://anyio.readthedocs.io/en/stable/versionhistory.html |
+| asgiref | 3.11.1 | BSD License | https://github.com/django/asgiref/ |
+| asyncio-gevent | 0.2.5 | MIT License | https://github.com/gfmio/asyncio-gevent |
+| asyncio-mqtt | 0.16.2 | BSD 3-Clause License | UNKNOWN |
+| attrs | 26.1.0 | MIT | https://www.attrs.org/en/stable/changelog.html |
+| Authlib | 1.7.2 | BSD License | https://github.com/authlib/authlib |
+| bcrypt | 5.0.0 | Apache Software License | https://github.com/pyca/bcrypt/ |
+| billiard | 4.2.4 | BSD License | https://github.com/celery/billiard |
+| bm25-chroma | 0.6.1 | MIT License | https://github.com/thistleknot/bm25-chroma |
+| boto3 | 1.43.45 | Apache-2.0 | https://github.com/boto/boto3 |
+| botocore | 1.43.45 | Apache-2.0 | https://github.com/boto/botocore |
+| build | 1.5.1 | MIT | https://build.pypa.io |
+| celery | 5.6.3 | BSD-3-Clause | https://docs.celeryq.dev/ |
+| certifi | 2026.6.17 | Mozilla Public License 2.0 (MPL 2.0) | https://github.com/certifi/python-certifi |
+| cffi | 2.1.0 | MIT-0 | https://cffi.readthedocs.io/en/latest/whatsnew.html |
+| charset-normalizer | 3.4.9 | MIT | https://github.com/jawah/charset_normalizer/blob/master/CHANGELOG.md |
+| chromadb | 1.5.9 | Apache Software License | https://github.com/chroma-core/chroma |
+| click | 8.4.2 | BSD-3-Clause | https://github.com/pallets/click/ |
+| click-didyoumean | 0.3.1 | MIT License | https://github.com/click-contrib/click-didyoumean |
+| click-log | 0.4.0 | MIT License | https://github.com/click-contrib/click-log |
+| click-plugins | 1.1.1.2 | BSD License | https://github.com/click-contrib/click-plugins |
+| click-repl | 0.3.0 | MIT | https://github.com/untitaker/click-repl |
+| croniter | 6.2.4 | MIT | https://github.com/pallets-eco/croniter |
+| cryptography | 49.0.0 | Apache-2.0 OR BSD-3-Clause | https://github.com/pyca/cryptography |
+| cyclopts | 4.21.0 | Apache-2.0 | https://github.com/BrianPugh/cyclopts |
+| defusedxml | 0.7.1 | Python Software Foundation License | https://github.com/tiran/defusedxml |
+| diskcache | 5.6.3 | Apache Software License | http://www.grantjenks.com/docs/diskcache/ |
+| distro | 1.9.0 | Apache Software License | https://github.com/python-distro/distro |
+| dnspython | 2.8.0 | ISC License (ISCL) | https://www.dnspython.org |
+| docstring_parser | 0.18.0 | MIT License | https://github.com/rr-/docstring_parser |
+| durationpy | 0.10 | MIT | https://github.com/icholy/durationpy |
+| email-validator | 2.3.0 | The Unlicense (Unlicense) | https://github.com/JoshData/python-email-validator |
+| et_xmlfile | 2.0.0 | MIT License | https://foss.heptapod.net/openpyxl/et_xmlfile |
+| exceptiongroup | 1.3.1 | MIT License | https://github.com/agronholm/exceptiongroup/blob/main/CHANGES.rst |
+| fastapi | 0.139.0 | MIT | https://github.com/fastapi/fastapi |
+| fastmcp | 2.12.4 | Apache-2.0 | https://gofastmcp.com |
+| filelock | 3.29.7 | MIT | https://github.com/tox-dev/py-filelock |
+| flatbuffers | 25.12.19 | Apache Software License | https://google.github.io/flatbuffers/ |
+| flower | 2.0.1 | BSD License | https://github.com/mher/flower |
+| frozenlist | 1.8.0 | Apache-2.0 | https://github.com/aio-libs/frozenlist |
+| fsspec | 2026.6.0 | BSD-3-Clause | https://github.com/fsspec/filesystem_spec |
+| gevent | 26.5.0 | MIT | http://www.gevent.org/ |
+| google-auth | 2.55.2 | Apache Software License | https://github.com/googleapis/google-cloud-python/tree/main/packages/google-auth |
+| google-genai | 2.11.0 | Apache-2.0 | https://github.com/googleapis/python-genai |
+| googleapis-common-protos | 1.75.0 | Apache Software License | https://github.com/googleapis/google-cloud-python/tree/main/packages/googleapis-common-protos |
+| greenlet | 3.5.3 | MIT AND PSF-2.0 | https://greenlet.readthedocs.io |
+| grpcio | 1.78.0 | Apache-2.0 | https://grpc.io |
+| h11 | 0.16.0 | MIT License | https://github.com/python-hyper/h11 |
+| hf-xet | 1.5.1 | Apache-2.0 | https://github.com/huggingface/xet-core |
+| httpcore | 1.0.9 | BSD-3-Clause | https://www.encode.io/httpcore/ |
+| httptools | 0.8.0 | MIT | https://github.com/MagicStack/httptools |
+| httpx | 0.28.1 | BSD License | https://github.com/encode/httpx |
+| httpx-sse | 0.4.3 | MIT | https://github.com/florimondmanca/httpx-sse |
+| huggingface_hub | 1.23.0 | Apache Software License | https://github.com/huggingface/huggingface_hub |
+| humanize | 4.16.0 | MIT | https://github.com/python-humanize/humanize |
+| idna | 3.18 | BSD-3-Clause | https://github.com/kjd/idna |
+| importlib_resources | 7.1.0 | Apache-2.0 | https://github.com/python/importlib_resources |
+| isodate | 0.7.2 | BSD License | https://github.com/gweis/isodate/ |
+| Jinja2 | 3.1.6 | BSD License | https://github.com/pallets/jinja/ |
+| jiter | 0.16.0 | MIT | https://github.com/pydantic/jiter/ |
+| jmespath | 1.1.0 | MIT License | https://github.com/jmespath/jmespath.py |
+| joblib | 1.5.3 | BSD-3-Clause | https://joblib.readthedocs.io |
+| joserfc | 1.7.3 | BSD License | https://github.com/authlib/joserfc |
+| jsonpatch | 1.33 | BSD License | https://github.com/stefankoegl/python-json-patch |
+| jsonpointer | 3.1.1 | BSD License | https://github.com/stefankoegl/python-json-pointer |
+| jsonschema | 4.26.0 | MIT | https://github.com/python-jsonschema/jsonschema |
+| jsonschema-path | 0.4.6 | Apache Software License | https://github.com/p1c2u/jsonschema-path |
+| jsonschema-specifications | 2025.9.1 | MIT | https://github.com/python-jsonschema/jsonschema-specifications |
+| kombu | 5.6.2 | BSD-3-Clause | https://kombu.readthedocs.io |
+| kubernetes | 36.0.2 | Apache Software License | https://github.com/kubernetes-client/python |
+| langchain | 1.3.12 | MIT License | https://docs.langchain.com/ |
+| langchain-classic | 1.0.8 | MIT License | https://docs.langchain.com/ |
+| langchain-community | 0.4.2 | MIT | https://docs.langchain.com/ |
+| langchain-core | 1.4.9 | MIT License | https://docs.langchain.com/ |
+| langchain-protocol | 0.0.18 | MIT License | https://github.com/langchain-ai/agent-protocol/tree/main/streaming |
+| langchain-text-splitters | 1.1.2 | MIT License | https://docs.langchain.com/ |
+| langgraph | 1.2.9 | MIT | https://docs.langchain.com/oss/python/langgraph/overview |
+| langgraph-checkpoint | 4.1.1 | MIT | https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint |
+| langgraph-prebuilt | 1.1.0 | MIT | https://github.com/langchain-ai/langgraph/tree/main/libs/prebuilt |
+| langgraph-sdk | 0.4.2 | MIT | https://github.com/langchain-ai/langgraph/tree/main/libs/sdk-py |
+| langsmith | 0.10.2 | MIT | https://smith.langchain.com/ |
+| lazy-object-proxy | 1.12.0 | BSD-2-Clause | https://python-lazy-object-proxy.readthedocs.io/en/latest/changelog.html |
+| libtmux | 0.61.0 | MIT License | https://github.com/tmux-python/libtmux |
+| llama_cpp_python | 0.3.33 | MIT | https://github.com/abetlen/llama-cpp-python |
+| lxml | 6.1.1 | BSD-3-Clause | https://lxml.de/ |
+| Mako | 1.3.12 | MIT License | https://www.makotemplates.org/ |
+| markdown-it-py | 4.2.0 | MIT License | https://github.com/executablebooks/markdown-it-py |
+| MarkupSafe | 3.0.3 | BSD-3-Clause | https://github.com/pallets/markupsafe/ |
+| mcp | 1.28.1 | MIT License | https://modelcontextprotocol.io |
+| mdurl | 0.1.2 | MIT License | https://github.com/executablebooks/mdurl |
+| mmh3 | 5.2.1 | MIT License | https://pypi.org/project/mmh3/ |
+| more-itertools | 11.1.0 | MIT | https://github.com/more-itertools/more-itertools |
+| mpmath | 1.3.0 | BSD License | http://mpmath.org/ |
+| msgpack | 1.2.1 | Apache-2.0 | https://msgpack.org/ |
+| multidict | 6.7.1 | Apache License 2.0 | https://github.com/aio-libs/multidict |
+| narwhals | 2.23.0 | MIT | https://github.com/narwhals-dev/narwhals |
+| networkx | 3.6.1 | BSD-3-Clause | https://networkx.org/ |
+| nltk | 3.10.0 | Apache Software License | https://www.nltk.org/ |
+| numpy | 2.4.6 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | https://numpy.org |
+| nvidia-ml-py | 13.610.43 | BSD License | https://forums.developer.nvidia.com |
+| oauthlib | 3.3.1 | BSD-3-Clause | https://github.com/oauthlib/oauthlib |
+| odfpy | 1.4.1 | Apache Software License; GNU General Public License (GPL); GNU Library or Lesser General Public License (LGPL) | https://github.com/eea/odfpy |
+| onnxruntime | 1.27.0 | MIT License | https://onnxruntime.ai |
+| openai | 2.45.0 | Apache Software License | https://github.com/openai/openai-python |
+| openapi-core | 0.23.1 | BSD License | https://github.com/python-openapi/openapi-core |
+| openapi-pydantic | 0.5.1 | MIT License | https://github.com/mike-oakley/openapi-pydantic |
+| openapi-schema-validator | 0.8.1 | BSD License | https://github.com/python-openapi/openapi-schema-validator |
+| openapi-spec-validator | 0.8.5 | Apache-2.0 | https://github.com/python-openapi/openapi-spec-validator |
+| openpyxl | 3.1.5 | MIT License | https://openpyxl.readthedocs.io |
+| opentelemetry-api | 1.43.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api |
+| opentelemetry-exporter-otlp | 1.43.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp |
+| opentelemetry-exporter-otlp-proto-common | 1.43.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-common |
+| opentelemetry-exporter-otlp-proto-grpc | 1.43.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-grpc |
+| opentelemetry-exporter-otlp-proto-http | 1.43.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-http |
+| opentelemetry-proto | 1.43.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-proto |
+| opentelemetry-sdk | 1.43.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-sdk |
+| opentelemetry-semantic-conventions | 0.64b0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-semantic-conventions |
+| orjson | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | https://github.com/ijl/orjson |
+| ormsgpack | 1.12.2 | Apache-2.0 OR MIT | https://github.com/ormsgpack/ormsgpack |
+| overrides | 7.7.0 | Apache License, Version 2.0 | https://github.com/mkorpela/overrides |
+| packaging | 26.2 | Apache-2.0 OR BSD-2-Clause | https://github.com/pypa/packaging |
+| paho-mqtt | 2.1.0 | EPL-2.0 OR BSD-3-Clause | http://eclipse.org/paho |
+| pandas | 3.0.3 | BSD License | https://pandas.pydata.org |
+| passlib | 1.7.4 | BSD | https://passlib.readthedocs.io |
+| pasteboard | 0.3.3 | MPL-2.0 | https://github.com/tobywf/pasteboard |
+| pathable | 0.5.0 | Apache Software License | https://github.com/p1c2u/pathable |
+| pdfminer.six | 20260107 | MIT | https://github.com/pdfminer/pdfminer.six |
+| pdfplumber | 0.11.10 | MIT License | https://github.com/jsvine/pdfplumber |
+| pillow | 12.3.0 | MIT-CMU | https://python-pillow.github.io |
+| pinecone-client | 6.0.0 | Apache Software License | https://www.pinecone.io |
+| pinecone-plugin-interface | 0.0.7 | Apache Software License | https://www.pinecone.io |
+| playwright | 1.61.0 | Apache-2.0 | https://github.com/Microsoft/playwright-python |
+| prometheus_client | 0.25.0 | Apache-2.0 AND BSD-2-Clause | https://github.com/prometheus/client_python |
+| prompt_toolkit | 3.0.52 | BSD License | https://github.com/prompt-toolkit/python-prompt-toolkit |
+| propcache | 0.5.2 | Apache Software License | https://github.com/aio-libs/propcache |
+| protobuf | 6.33.6 | 3-Clause BSD License | https://developers.google.com/protocol-buffers/ |
+| psutil | 7.2.2 | BSD-3-Clause | https://github.com/giampaolo/psutil |
+| psycopg | 3.3.4 | LGPL-3.0-only | https://psycopg.org/ |
+| psycopg-binary | 3.3.4 | LGPL-3.0-only | https://psycopg.org/ |
+| pyasn1 | 0.6.4 | BSD-2-Clause | https://github.com/pyasn1/pyasn1 |
+| pyasn1_modules | 0.4.2 | BSD License | https://github.com/pyasn1/pyasn1-modules |
+| pybase64 | 1.4.3 | BSD License | https://github.com/mayeut/pybase64 |
+| pyclip | 0.7.0 | Apache Software License | https://github.com/spyoungtech/pyclip |
+| pycparser | 3.0 | BSD-3-Clause | https://github.com/eliben/pycparser |
+| pydantic | 2.13.4 | MIT | https://github.com/pydantic/pydantic |
+| pydantic-settings | 2.14.2 | MIT | https://github.com/pydantic/pydantic-settings |
+| pydantic_core | 2.46.4 | MIT | https://github.com/pydantic |
+| pyee | 13.0.1 | MIT License | https://github.com/jfhbrook/pyee |
+| Pygments | 2.20.0 | BSD-2-Clause | https://pygments.org |
+| PyJWT | 2.13.0 | MIT | https://github.com/jpadilla/pyjwt |
+| pynvml | 13.0.1 | BSD License | https://github.com/gpuopenanalytics/pynvml |
+| pypdfium2 | 5.11.0 | BSD-3-Clause, Apache-2.0, dependency licenses | https://github.com/pypdfium2-team/pypdfium2 |
+| pyperclip | 1.11.0 | BSD License | https://github.com/asweigart/pyperclip |
+| PyPika | 0.51.1 | Apache Software License | https://github.com/kayak/pypika |
+| pyproject_hooks | 1.2.0 | MIT License | https://github.com/pypa/pyproject-hooks |
+| pytesseract | 0.3.13 | Apache Software License | https://github.com/madmaze/pytesseract |
+| python-dateutil | 2.9.0.post0 | Apache Software License; BSD License | https://github.com/dateutil/dateutil |
+| python-docx | 1.2.0 | MIT License | https://github.com/python-openxml/python-docx |
+| python-dotenv | 1.2.2 | BSD-3-Clause | https://github.com/theskumar/python-dotenv |
+| python-multipart | 0.0.32 | Apache-2.0 | https://github.com/Kludex/python-multipart |
+| python-pptx | 1.0.2 | MIT License | https://github.com/scanny/python-pptx |
+| pytz | 2026.2 | MIT License | http://pythonhosted.org/pytz |
+| PyYAML | 6.0.3 | MIT License | https://pyyaml.org/ |
+| redis | 8.0.1 | MIT | https://github.com/redis/redis-py |
+| referencing | 0.37.0 | MIT | https://github.com/python-jsonschema/referencing |
+| regex | 2026.6.28 | Apache-2.0 AND CNRI-Python | https://github.com/mrabarnett/mrab-regex |
+| requests | 2.34.2 | Apache Software License | https://github.com/psf/requests |
+| requests-oauthlib | 2.0.0 | BSD License | https://github.com/requests/requests-oauthlib |
+| requests-toolbelt | 1.0.0 | Apache Software License | https://toolbelt.readthedocs.io/ |
+| rfc3339-validator | 0.1.4 | MIT License | https://github.com/naimetti/rfc3339-validator |
+| rich | 15.0.0 | MIT License | https://github.com/Textualize/rich |
+| rich-rst | 2.1.0 | MIT | https://wasi-master.github.io/rich-rst |
+| rpds-py | 2026.6.3 | MIT | https://github.com/crate-py/rpds |
+| s3transfer | 0.19.0 | Apache Software License | https://github.com/boto/s3transfer |
+| safetensors | 0.8.0 | Apache Software License | https://github.com/huggingface/safetensors |
+| schedule | 1.2.2 | MIT License | https://github.com/dbader/schedule |
+| scikit-learn | 1.9.0 | BSD-3-Clause | https://scikit-learn.org |
+| scipy | 1.17.1 | BSD License | https://scipy.org/ |
+| sentence-transformers | 5.6.0 | Apache-2.0 | https://www.SBERT.net |
+| shellingham | 1.5.4 | ISC License (ISCL) | https://github.com/sarugaku/shellingham |
+| six | 1.17.0 | MIT License | https://github.com/benjaminp/six |
+| sniffio | 1.3.1 | Apache Software License; MIT License | https://github.com/python-trio/sniffio |
+| SQLAlchemy | 2.0.51 | MIT | https://www.sqlalchemy.org |
+| sse-starlette | 3.4.5 | BSD-3-Clause | https://github.com/sysid/sse-starlette |
+| starlette | 1.3.1 | BSD-3-Clause | https://github.com/Kludex/starlette |
+| striprtf | 0.0.32 | BSD-3-Clause | https://github.com/joshy/striprtf |
+| structlog | 26.1.0 | MIT OR Apache-2.0 | https://github.com/hynek/structlog/blob/main/CHANGELOG.md |
+| sympy | 1.14.0 | BSD License | https://sympy.org |
+| tenacity | 9.1.4 | Apache Software License | https://github.com/jd/tenacity |
+| threadpoolctl | 3.6.0 | BSD License | https://github.com/joblib/threadpoolctl |
+| tokenizers | 0.22.2 | Apache Software License | https://github.com/huggingface/tokenizers |
+| toml | 0.10.2 | MIT License | https://github.com/uiri/toml |
+| torch | 2.13.0 | Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT | https://pytorch.org |
+| tornado | 6.5.7 | Apache Software License | http://www.tornadoweb.org/ |
+| tqdm | 4.68.4 | MPL-2.0 AND MIT | https://tqdm.github.io |
+| transformers | 5.13.0 | Apache 2.0 License | https://github.com/huggingface/transformers |
+| typer | 0.26.8 | MIT | https://github.com/fastapi/typer |
+| typing-inspection | 0.4.2 | MIT | https://github.com/pydantic/typing-inspection |
+| typing_extensions | 4.16.0 | PSF-2.0 | https://github.com/python/typing_extensions |
+| tzdata | 2026.3 | Apache-2.0 | https://github.com/python/tzdata |
+| tzlocal | 5.4.4 | MIT | https://github.com/regebro/tzlocal/blob/master/CHANGES.txt |
+| urllib3 | 2.7.0 | MIT | https://github.com/urllib3/urllib3/blob/main/CHANGES.rst |
+| uuid_utils | 0.17.0 | BSD-3-Clause | https://github.com/aminalaee/uuid-utils |
+| uvicorn | 0.51.0 | BSD-3-Clause | https://uvicorn.dev/ |
+| uvloop | 0.22.1 | Apache Software License; MIT License | UNKNOWN |
+| validators | 0.35.0 | MIT License | https://python-validators.github.io/validators |
+| vine | 5.1.0 | BSD License | https://github.com/celery/vine |
+| watchfiles | 1.2.0 | MIT License | https://github.com/samuelcolvin/watchfiles |
+| weaviate-client | 4.22.0 | BSD 3-clause | https://github.com/weaviate/weaviate-python-client |
+| websocket-client | 1.9.0 | Apache Software License | https://github.com/websocket-client/websocket-client.git |
+| websockets | 15.0.1 | BSD License | https://github.com/python-websockets/websockets |
+| Werkzeug | 3.1.8 | BSD-3-Clause | https://github.com/pallets/werkzeug/ |
+| xlsxwriter | 3.2.9 | BSD License | https://github.com/jmcnamara/XlsxWriter |
+| xxhash | 3.8.1 | BSD-2-Clause | https://github.com/ifduyue/python-xxhash |
+| yarl | 1.24.2 | Apache-2.0 | https://github.com/aio-libs/yarl |
+| zope.event | 6.2 | ZPL-2.1 | https://github.com/zopefoundation/zope.event |
+| zope.interface | 8.5 | ZPL-2.1 | https://github.com/zopefoundation/zope.interface |
+| zstandard | 0.25.0 | BSD-3-Clause | https://github.com/indygreg/python-zstandard |

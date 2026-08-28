@@ -1,0 +1,4 @@
+format_version: "1"
+name: "agent-configured"
+version: "0.1.0"
+description: "Bundle fixture that defines agent registry entries via agents/agents.yaml."

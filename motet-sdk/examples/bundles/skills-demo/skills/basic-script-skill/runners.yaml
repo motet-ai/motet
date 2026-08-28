@@ -1,0 +1,18 @@
+# Declarative runner → tool skills-demo.basic-script-skill.echo
+runners:
+  - name: echo
+    description: |
+      Run echo_payload.py with a text argument and return a JSON envelope.
+      Useful for verifying that bundle deployment, skill loading, and
+      worker_exec wiring all work end-to-end.
+    script: scripts/echo_payload.py
+    interpreter: python3
+    image_stack: python-minimal
+    lifetime: ephemeral
+    timeout_seconds: 30
+    network: inherit
+    args:
+      text:
+        type: string
+        description: Message text to round-trip through the script.
+        default: "hello"

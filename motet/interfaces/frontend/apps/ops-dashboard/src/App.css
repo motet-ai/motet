@@ -1,0 +1,275 @@
+/* Admin Dashboard - Global Styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+/* Main layout shell: column flex so header is on top, body (sider + content) below.
+   Ant Design Layout defaults to row; override so header and body stack vertically. */
+.ant-layout.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column !important;
+}
+
+.app-shell > .app-header {
+  flex: 0 0 auto;
+  z-index: 20;
+}
+
+.app-shell > .app-body {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Left sider: fixed width, do not grow */
+.app-body > .ant-layout-sider {
+  flex: 0 0 auto;
+}
+
+/* Scrollable content area */
+.app-main,
+.ant-layout-content {
+  overflow-y: auto;
+}
+
+.app-main {
+  min-height: 0;
+}
+
+/* Page headers */
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h2 {
+  margin-bottom: 8px;
+}
+
+/* Stats cards row */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+/* ── Left sider chrome ─────────────────────────────────────────────────────── */
+
+.app-sider {
+  transition: width 0.2s ease, min-width 0.2s ease, flex-basis 0.2s ease !important;
+  /* Keep the right edge above the main content (shared layout bg). */
+  position: relative;
+  z-index: 1;
+}
+
+/* Explicit nav edge: sider and main share the layout background, so a
+   dedicated hairline is needed — especially in light mode. */
+.app-sider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.app-sider--light::after {
+  width: 1px;
+  background: #a8b3bf;
+}
+
+.app-sider--dark::after {
+  background: #2a323a;
+}
+
+.sider-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 10px 12px 4px;
+  min-height: 44px;
+}
+
+.sider-chrome:not(.sider-chrome--collapsed) {
+  justify-content: flex-start;
+  padding: 10px 12px 4px 20px;
+}
+
+.sider-chrome:not(.sider-chrome--collapsed) .sider-collapse-btn {
+  margin-left: auto;
+}
+
+.sider-version {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sider-chrome--collapsed {
+  justify-content: center;
+  padding: 10px 8px 4px;
+}
+
+.sider-collapse-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.app-sider--light .sider-collapse-btn {
+  color: rgba(15, 18, 21, 0.55) !important;
+}
+
+.app-sider--light .sider-collapse-btn:hover {
+  color: rgba(15, 18, 21, 0.85) !important;
+  background: rgba(15, 18, 21, 0.06) !important;
+}
+
+/* Dark sider inherits near-invisible text-button color; force a readable icon. */
+.app-sider--dark .sider-collapse-btn {
+  color: rgba(255, 255, 255, 0.82) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.app-sider--dark .sider-collapse-btn:hover {
+  color: rgba(255, 255, 255, 0.96) !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+.app-sider--dark .sider-collapse-btn .anticon,
+.app-sider--dark .sider-collapse-btn .anticon svg {
+  color: inherit !important;
+  fill: currentColor !important;
+}
+
+.app-sider-menu.ant-menu-inline,
+.app-sider-menu.ant-menu-vertical {
+  border-inline-end: none !important;
+}
+
+.app-sider-menu .ant-menu-item-group-title {
+  padding: 16px 20px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.65;
+  line-height: 1.2;
+}
+
+.app-sider-menu .ant-menu-item {
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.app-sider-menu .ant-menu-item-selected {
+  font-weight: 500;
+}
+
+/* When collapsed, hide group labels so icon-only nav stays clean */
+.app-sider.ant-layout-sider-collapsed .app-sider-menu .ant-menu-item-group-title {
+  display: none;
+}
+
+/* Sider transitions */
+.ant-layout-sider {
+  transition: all 0.2s ease;
+}
+
+/* Right sidebar overlay: does not squish main content when expanded */
+.right-sidebar-overlay {
+  transition: width 0.2s ease;
+  box-shadow: -2px 0 12px rgba(15, 18, 21, 0.08);
+}
+
+.right-sidebar-overlay .ant-layout-sider {
+  height: 100%;
+}
+
+/* Task flow React Flow diagram */
+.task-flow-rf {
+  width: 100%;
+  height: 100%;
+}
+
+.task-flow-rf .react-flow__node {
+  font-family: inherit;
+}
+
+/* React Flow default stylesheet paints a light canvas; override for dark mode. */
+.task-flow-rf--dark .react-flow,
+.task-flow-rf--dark .react-flow__viewport,
+.task-flow-rf--dark .react-flow__renderer {
+  background: transparent !important;
+}
+
+.task-flow-rf--dark .react-flow__controls {
+  background: #1a1f24;
+  border: 1px solid #2a323a;
+  box-shadow: none;
+}
+
+.task-flow-rf--dark .react-flow__controls-button {
+  background: #1a1f24;
+  border-bottom-color: #2a323a;
+  fill: rgba(255, 255, 255, 0.75);
+}
+
+.task-flow-rf--dark .react-flow__controls-button:hover {
+  background: #232a31;
+}
+
+.task-flow-rf--dark .react-flow__minimap {
+  background: #14181c !important;
+}
+
+.task-flow-rf-node--in-progress {
+  animation: task-flow-in-progress-pulse 1.8s ease-in-out infinite;
+}
+
+.task-flow-rf-iter-group {
+  pointer-events: none;
+}
+
+/* Task flow: subtle pulse for commands still processing */
+@keyframes task-flow-in-progress-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 91, 219, 0.28); }
+  50% { box-shadow: 0 0 0 3px rgba(59, 91, 219, 0.10); }
+}
+
+.task-flow-command-in-progress {
+  animation: task-flow-in-progress-pulse 1.8s ease-in-out infinite;
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  .ant-layout-sider {
+    position: absolute;
+    z-index: 100;
+    height: 100%;
+  }
+
+  .ant-layout-sider-collapsed {
+    width: 0 !important;
+    min-width: 0 !important;
+    flex: 0 0 0 !important;
+  }
+
+  .app-brand-label {
+    display: none;
+  }
+}

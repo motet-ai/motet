@@ -1,0 +1,40 @@
+# Local Inference Manager — sibling control-plane image deps (ADR-0105 hoist).
+#
+# Base set is kept in parity with docker/images/mcp-manager/requirements.txt: importing the
+# manager pulls in the shared motet.core.workers chain (events -> observers -> security/auth),
+# which imports the web/auth stack (fastapi, httpx, aiohttp, asgiref). mcp-manager is the
+# proven-good curated set for that exact import graph, so we mirror it here.
+#
+# On top of that base, the LocalInferenceManager needs:
+#   - psutil           : process health metrics in publish_health_to_redis()
+#   - numpy            : pulled in by llama-cpp-python / model tensors
+#   - llama-cpp-python : the GGUF inference engine. Pinned >=0.3.24 (ADR-0117): the
+#                        2026 architectures (Gemma 4 / Qwen3 / Ministral 3) need a 2026
+#                        llama.cpp build, and the embedded-Jinja chat-template path the
+#                        refreshed tier relies on. There was a long gap between 0.3.16
+#                        (Aug 2025) and 0.3.17 (Mar 2026), so a looser floor could resolve
+#                        to a pre-2026 build that lacks these architectures.
+#
+# Intentionally LEAN: torch + transformers are NOT installed. model_cache.py imports those
+# lazily only for the (NVIDIA) transformers engine; the CPU/Apple GGUF path uses llama.cpp.
+# A future GPU variant can add `vllm torch transformers` in a dedicated image.
+aiohttp>=3.9.0
+asgiref>=3.7.0
+cryptography>=41.0.0
+fastapi>=0.104.0
+httpx>=0.25.0
+mcp>=1.13,<2
+msgpack>=1.0.0
+prometheus-client>=0.18.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+redis>=4.5.0
+valkey-glide>=2.5.0
+valkey-glide-sync>=2.5.0
+structlog>=23.0.0
+typing-extensions>=4.0.0
+psutil>=5.9.0
+numpy>=1.24.0
+llama-cpp-python>=0.3.24

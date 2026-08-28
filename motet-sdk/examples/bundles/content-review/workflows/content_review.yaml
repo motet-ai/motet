@@ -1,0 +1,121 @@
+# content_review — multi-perspective content review and revision workflow.
+#
+# Demonstrates the same pipeline as coordinate_reviews.py but defined
+# declaratively.  The workflow engine handles parallelism automatically:
+# steps with no dependency between them run concurrently.
+#
+# Pipeline:
+#   1. review_grammar, review_tone, review_accuracy, review_seo (parallel)
+#   2. synthesize_feedback (depends on all reviews)
+#   3. revise_content (depends on synthesize_feedback)
+
+workflow_id: content_review
+name: Content Review
+output_field: revised_content
+description: >
+  Review content from multiple perspectives (grammar, tone, accuracy, SEO),
+  synthesize the feedback into a prioritized report, and produce a revised
+  version.  Use for requests like "review this draft", "edit my blog post",
+  or "proofread and improve this article".
+
+  RESULT: When this workflow completes, the revise_content step produces a
+  revised_content field containing the improved text.  Present it directly
+  to the user alongside the feedback report from synthesize_feedback.
+
+input_parameters:
+  content:
+    type: string
+    description: The content to review and revise.
+    required: true
+  audience:
+    type: string
+    description: Target audience (e.g. "technical developers", "executives").
+    default: "general"
+  content_type:
+    type: string
+    description: Content type (article, blog_post, landing_page, documentation).
+    default: "article"
+  provider:
+    type: string
+    description: LLM provider for all review and synthesis steps.
+    default: "openai"
+  model_name:
+    type: string
+    description: LLM model name for all review and synthesis steps.
+    default: "gpt-4o-mini"
+
+steps:
+  # These four steps have no dependencies between them — the workflow
+  # engine runs them in parallel automatically.
+  review_grammar:
+    step_id: review_grammar
+    command_type: content-review.review_grammar
+    description: "Check grammar, spelling, and punctuation."
+    parameters:
+      content: "{{content}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies: []
+
+  review_tone:
+    step_id: review_tone
+    command_type: content-review.review_tone
+    description: "Evaluate tone and audience appropriateness."
+    parameters:
+      content: "{{content}}"
+      audience: "{{audience}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies: []
+
+  review_accuracy:
+    step_id: review_accuracy
+    command_type: content-review.review_accuracy
+    description: "Fact-check claims and flag unsupported assertions."
+    parameters:
+      content: "{{content}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies: []
+
+  review_seo:
+    step_id: review_seo
+    command_type: content-review.review_seo
+    description: "Analyze SEO: keywords, headings, readability for search."
+    parameters:
+      content: "{{content}}"
+      content_type: "{{content_type}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies: []
+
+  synthesize_feedback:
+    step_id: synthesize_feedback
+    command_type: content-review.synthesize_feedback
+    description: "Combine all review perspectives into a unified feedback report."
+    parameters:
+      content: "{{content}}"
+      grammar: "{{review_grammar}}"
+      tone: "{{review_tone}}"
+      accuracy: "{{review_accuracy}}"
+      seo: "{{review_seo}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies:
+      - review_grammar
+      - review_tone
+      - review_accuracy
+      - review_seo
+
+  revise_content:
+    step_id: revise_content
+    command_type: content-review.revise_content
+    description: "Revise the content based on synthesized feedback."
+    parameters:
+      original_content: "{{content}}"
+      feedback_report: "{{synthesize_feedback.report}}"
+      audience: "{{audience}}"
+      provider: "{{provider}}"
+      model_name: "{{model_name}}"
+    dependencies:
+      - synthesize_feedback
