@@ -24,7 +24,7 @@ Chat Explorer is a React application (Ant Design + Ant Design X) that provides:
 - **Model picker**: One searchable select below the composer. Each option is `provider : model`; Auto leaves routing to the backend. A key icon marks providers with an API key configured (environment or vault). Models that need a key and do not have one stay in the list but cannot be selected. Enable thinking sits to the right; when it is on, reasoning effort appears to the right of the switch.
 - **Attachments**: Upload files (images, PDFs, documents) as artifacts; attach them to messages and preview in the thread.
 - **Retrieval**: Search-icon popover on the composer — This chat, My files, or Workspace. Advanced file IDs and tags stay collapsed. A chip next to the icon shows the current scope; clearing it returns to This chat.
-- **Auth**: JWT, API key, service account, or SSO (OAuth) via the auth and OAuth APIs. When you are signed out, Chat Explorer and Administration show a full-page sign-in landing; the app shell is not on screen.
+- **Auth**: JWT, API key, service account, or SSO (OAuth) via the auth and OAuth APIs. When you are signed out, Chat Explorer and Administration show a full-page sign-in landing; the app shell is not on screen. On a local stack, sign in with a seeded Keycloak user — `motet-admin` / `RootPassword1!` or `acme-user` / `AcmeUser1!` (see [Quick Start — Log in](./04-quick-start-guide.md#log-in)).
 - **Multi-agent reasoning**: Right-hand panel shows per-agent reasoning chains, thinking traces, tool executions, and workflow steps — each attributed to the agent that produced them.
 - **Observability**: Optional event stream panel for debugging task and stream events.
 
@@ -46,7 +46,8 @@ npm run dev
 In local Docker compose, open the API origin and navigate to `/chat-explorer/`
 (or the Vite dev proxy path). On AWS EC2: `https://<public-ip>/chat-explorer/`.
 
-Configure base URL and auth as needed for your environment.
+Configure base URL and auth as needed for your environment. On a local stack,
+sign in with the seeded users from [Quick Start — Log in](./04-quick-start-guide.md#log-in).
 
 ## Frontend Monorepo Structure
 
@@ -216,6 +217,6 @@ The shared package has `react`, `react-dom`, `antd`, `@ant-design/x`, and `@ant-
 
 ---
 
-**Last Updated**: 2026-08-26
+**Last Updated**: 2026-08-28
 
 **See the framework in action.** Run Chat Explorer at `/chat-explorer/` and use the APIs it demonstrates to build your own chat or agent UIs.

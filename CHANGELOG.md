@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-28
+
+### Added
+- Local-stack sign-in docs: seeded Keycloak users (`motet-admin`, `acme-user`) in Quick Start
+  and Chat Explorer, so the first `local up` has a path through the SSO page.
+
+### Changed
+- Prometheus series on `/metrics` use the `motet_` prefix (`motet_requests_total`,
+  `motet_auth_attempts_total`, tool/model/breaker/scheduler series). The `imf_`
+  names are not emitted.
+- Public quick start no longer requires `docker login ghcr.io` for `ghcr.io/motet-ai` images.
+
 ## [0.1.0] - 2026-06-18
 
 ### Added

@@ -134,7 +134,7 @@ services:
 ```bash
 # Start all services (writes tls/ when missing so redis-tls can start).
 # Pulls Motet-bearing images when the tag is not local; --build rebuilds from this tree.
-docker login ghcr.io   # eval / invite-only snapshot
+# Public ghcr.io/motet-ai images pull without login. Login only for a private/eval registry.
 motet-cli local up
 
 # Check status
@@ -464,4 +464,4 @@ Now that your environment is set up:
 
 ---
 
-**Last Updated**: 2026-08-26
+**Last Updated**: 2026-08-28

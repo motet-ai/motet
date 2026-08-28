@@ -5,7 +5,7 @@ Copyright (c) 2024-2025 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-06-18
+Last Modified: 2026-08-28
 
 Description:
     Implements a distributed circuit breaker pattern for resilience in the Motet
@@ -61,12 +61,12 @@ def _ensure_breaker_metrics() -> None:
         from prometheus_client import Counter
 
         _CB_TRANSITIONS = Counter(
-            "imf_breaker_transitions_total",
+            "motet_breaker_transitions_total",
             "Circuit breaker transitions",
             ["to"],
         )
         _CB_BLOCKED = Counter(
-            "imf_breaker_blocked_total",
+            "motet_breaker_blocked_total",
             "Breaker blocked calls",
             ["reason"],
         )

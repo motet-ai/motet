@@ -4,9 +4,9 @@
 
 **License (split):** The runtime under `motet/` is **Functional Source License, Version 1.1 (FSL-1.1-ALv2)** or a commercial license — see [LICENSE-FSL](LICENSE-FSL) and [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md). The **Motet Developer Kit** in `motet-sdk/` is **Apache 2.0** — see [motet-sdk/LICENSE](motet-sdk/LICENSE). Third-party licenses: [NOTICES](NOTICES).
 
-Motet is the layer agents run *on*. Commands are the unit of work, workers are the scheduler, built-in tools and MCP are I/O, memory and artifacts are storage, and bundles are the applications you install. You run the stack (API, workers, Redis/Valkey, Postgres, identity) and extend it with the SDK.
+Motet is the layer agents run *on*. Commands are the unit of work, workers are the scheduler, built-in tools and MCP are I/O, memory and artifacts are storage, and **bundles are how you extend it**: installable packages of commands, tools, and workflows, written against the Apache-licensed SDK and deployed onto the running stack (API, workers, Redis/Valkey, Postgres, identity) without touching the runtime.
 
-Because an agent is just another thing the runtime schedules, **running several of them is ordinary rather than a special mode**: a registry holds many agent configurations, any agent can hand work to another, and a workflow can fan several out in parallel and synthesize the results. See [Advanced Motet Concepts](docs/developer_onboarding/24-advanced-concepts.md).
+Motet is built to coordinate agents working together. **Multi-agent orchestration is a first-class promise of the runtime**, not a special mode: a registry holds many agent configurations, any agent can hand work to another, and a workflow can fan several out in parallel and synthesize the results. See [Advanced Motet Concepts](docs/developer_onboarding/24-advanced-concepts.md).
 
 ## What you do not have to decide
 
@@ -34,16 +34,16 @@ Convenience images live at `ghcr.io/motet-ai` and use the product version tag. A
 - **[Architecture](docs/architecture/current/README.md)** — topology and runtime invariants; read the index plus the one chapter you need
 - **[Quick start](docs/developer_onboarding/04-quick-start-guide.md)** — env, first command, local chat
 - **[Local development](docs/developer_onboarding/14-local-development-setup.md)** — Docker workflow
-- **[Your first bundle](docs/developer_onboarding/15a-your-first-bundle.md)** — extend the runtime without changing core
+- **[Your first bundle](docs/developer_onboarding/15a-your-first-bundle.md)** — write an extension: package commands and tools, deploy to the running stack, no core changes
 
 With the stack up:
 
 | App | URL | Role |
 |---|---|---|
 | **Chat Explorer** | `/chat-explorer/` | Reference chat: agents, conversations, artifacts, streaming |
-| **Manage** | `/manage/` | Operators: workers, bundles, artifacts, schedules, traces |
+| **Manage** | `/manage/` | Full admin console: live worker fleet, bundle deploys, schedules, artifacts, spend, and per-task trace visualization |
 
-Both ship with the runtime. Build your own surfaces on the same APIs (`@motet/ui-common` is the shared UI kit). Details: [Chat Explorer](docs/developer_onboarding/36-chat-explorer.md), [Observability](docs/developer_onboarding/23-observability-debugging.md).
+Administration and monitoring are part of the runtime, not an add-on: Manage gives you a comprehensive window into what your agents are doing — which workers are healthy, what a task actually executed (rendered as a command graph), where the time and money went — from the first `local up`. Both apps ship with the runtime. Build your own surfaces on the same APIs (`@motet/ui-common` is the shared UI kit). Details: [Chat Explorer](docs/developer_onboarding/36-chat-explorer.md), [Observability](docs/developer_onboarding/23-observability-debugging.md).
 
 ## Capabilities
 
@@ -63,7 +63,8 @@ Both ship with the runtime. Build your own surfaces on the same APIs (`@motet/ui
 - **Details:** [MCP integration](docs/developer_onboarding/09-mcp-integration.md), [Tool ecosystem](docs/developer_onboarding/21-tool-ecosystem.md)
 
 ### Models
-- Orchestration uses a **canonical** request/stream protocol. Adapters map OpenAI, Anthropic, Gemini, and local APIs. Swap models without rewriting commands.
+- Orchestration uses a **canonical, provider-agnostic** request/stream protocol. Adapters map OpenAI, Anthropic, Gemini, and local APIs.
+- Your agentic flows are **model-agnostic**: swap providers by configuration and A/B model performance with little to no additional effort — no rewriting commands.
 - **Details:** [Canonical LLM protocol](docs/developer_onboarding/09a-canonical-llm-protocol.md)
 
 ### Cost and budgets
@@ -86,7 +87,7 @@ Both ship with the runtime. Build your own surfaces on the same APIs (`@motet/ui
 - **Details:** [Reasoning](docs/developer_onboarding/10-reasoning.md)
 
 ### Bundles, schedules, streaming
-- **Bundles**: package commands, tools, workflows, and config; lint, deploy, reload, rollback.
+- **Bundles** are Motet's extensibility mechanism — think extensions for the runtime. A bundle packages commands, tools, workflows, and config, and installs onto the running stack with lint, deploy, reload, and rollback. New capabilities reach every worker through this first-class path; you never rewrite workers to get a need met.
 - **Schedules**: cron, delayed, and recurring commands — work that continues without a live chat turn (`motet.schedules`, `motet.dispatch`).
 - **Streaming**: SSE for chat and UI events.
 - **Details:** [First bundle](docs/developer_onboarding/15a-your-first-bundle.md), [Schedules](docs/developer_onboarding/12-scheduled-commands.md), [Streaming](docs/developer_onboarding/13-streaming-responses.md)

@@ -444,10 +444,10 @@ print(f"Cache size: {cb_stats['cache_size']}")
 
 The system exposes Prometheus metrics for monitoring:
 
-- `imf_routing_requests_total` - Total routing requests
-- `imf_routing_decision_time_seconds` - Decision time histogram
-- `imf_circuit_breaker_workers_by_state` - Circuit breaker states
-- `imf_circuit_breaker_filtered_workers_total` - Filtered workers count
+- `motet_routing_requests_total` - Total routing requests
+- `motet_routing_decision_time_seconds` - Decision time histogram
+- `motet_circuit_breaker_workers_by_state` - Circuit breaker states
+- `motet_circuit_breaker_filtered_workers_total` - Filtered workers count
 
 ## Performance Considerations
 

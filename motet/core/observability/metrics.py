@@ -5,7 +5,7 @@ Copyright (c) 2024-2025 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-05
+Last Modified: 2026-08-28
 
 Description:
     Metrics collection system for the Motet distributed framework.
@@ -97,7 +97,7 @@ def _get_gauge(name: str, documentation: str, labelnames: list[str]) -> Optional
 
 
 def observe_tool_latency(tool_name: str, seconds: float) -> None:
-    hist = _get_hist("imf_tool_latency_seconds", "Tool execution latency", ["tool"])
+    hist = _get_hist("motet_tool_latency_seconds", "Tool execution latency", ["tool"])
     if hist is not None:
         hist.labels(tool=tool_name).observe(seconds)
     
@@ -112,7 +112,7 @@ def observe_tool_latency(tool_name: str, seconds: float) -> None:
 
 
 def increment_tool_requests(tool_name: str) -> None:
-    ctr = _get_counter("imf_tool_requests_total", "Tool requests by tool", ["tool"])
+    ctr = _get_counter("motet_tool_requests_total", "Tool requests by tool", ["tool"])
     if ctr is not None:
         ctr.labels(tool=tool_name).inc()
     
@@ -127,14 +127,14 @@ def increment_tool_requests(tool_name: str) -> None:
 
 
 def increment_tool_errors(tool_name: str, reason: str) -> None:
-    ctr = _get_counter("imf_tool_errors_total", "Tool errors by reason", ["tool", "reason"])
+    ctr = _get_counter("motet_tool_errors_total", "Tool errors by reason", ["tool", "reason"])
     if ctr is None:
         return
     ctr.labels(tool=tool_name, reason=reason).inc()
 
 
 def observe_model_latency(provider: str, model: str, seconds: float) -> None:
-    hist = _get_hist("imf_model_latency_seconds", "Model completion latency", ["provider", "model"])
+    hist = _get_hist("motet_model_latency_seconds", "Model completion latency", ["provider", "model"])
     if hist is not None:
         hist.labels(provider=provider, model=model).observe(seconds)
     
@@ -149,28 +149,28 @@ def observe_model_latency(provider: str, model: str, seconds: float) -> None:
 
 
 def increment_model_errors(provider: str, model: str, reason: str) -> None:
-    ctr = _get_counter("imf_model_errors_total", "Model errors by reason", ["provider", "model", "reason"])
+    ctr = _get_counter("motet_model_errors_total", "Model errors by reason", ["provider", "model", "reason"])
     if ctr is None:
         return
     ctr.labels(provider=provider, model=model, reason=reason).inc()
 
 
 def increment_summaries_created(count: int = 1) -> None:
-    ctr = _get_counter("imf_summaries_created_total", "Number of summaries created", [])
+    ctr = _get_counter("motet_summaries_created_total", "Number of summaries created", [])
     if ctr is None:
         return
     ctr.inc(count)
 
 
 def observe_scheduler_queue_wait(seconds: float) -> None:
-    hist = _get_hist("imf_scheduler_queue_wait_seconds", "Time tasks waited in the scheduler queue", [])
+    hist = _get_hist("motet_scheduler_queue_wait_seconds", "Time tasks waited in the scheduler queue", [])
     if hist is None:
         return
     hist.observe(seconds)
 
 
 def set_scheduler_queue_length(length: int) -> None:
-    g = _get_gauge("imf_scheduler_queue_length", "Current orchestrator scheduler queue length", [])
+    g = _get_gauge("motet_scheduler_queue_length", "Current orchestrator scheduler queue length", [])
     if g is None:
         return
     g.set(float(length))

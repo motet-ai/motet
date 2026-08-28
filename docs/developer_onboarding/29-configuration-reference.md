@@ -330,7 +330,7 @@ MOTET_DEBUG_MODE=false                      # Enable debug mode
 
 # Convenience images (compose / motet-cli local up)
 MOTET_IMAGE_REGISTRY=ghcr.io/motet-ai       # Registry prefix for Motet-bearing images
-MOTET_IMAGE_TAG=v0.1.0                      # Product version tag; `local up` pulls, `--build` rebuilds
+MOTET_IMAGE_TAG=v0.1.1                      # Product version tag; `local up` pulls, `--build` rebuilds
 ```
 
 ### Circuit Breakers
@@ -480,4 +480,4 @@ config = Config()  # Validates all environment variables
 
 ---
 
-**Last Updated**: 2026-08-26
+**Last Updated**: 2026-08-28

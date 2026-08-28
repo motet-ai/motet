@@ -36,31 +36,31 @@ The metrics that actually exist are HTTP, auth, tool, model, circuit breaker, an
 
 ```bash
 # HTTP and auth
-imf_requests_total
-imf_request_latency_seconds
-imf_auth_attempts_total
-imf_auth_latency_seconds
+motet_requests_total
+motet_request_latency_seconds
+motet_auth_attempts_total
+motet_auth_latency_seconds
 
 # Tools
-imf_tool_requests_total
-imf_tool_latency_seconds
-imf_tool_errors_total
+motet_tool_requests_total
+motet_tool_latency_seconds
+motet_tool_errors_total
 
 # Models
-imf_model_latency_seconds
-imf_model_errors_total
+motet_model_latency_seconds
+motet_model_errors_total
 
 # Resilience and scheduling
-imf_breaker_blocked_total
-imf_breaker_transitions_total
-imf_scheduler_queue_length
-imf_scheduler_queue_wait_seconds
+motet_breaker_blocked_total
+motet_breaker_transitions_total
+motet_scheduler_queue_length
+motet_scheduler_queue_wait_seconds
 
 # Memory
-imf_summaries_created_total
+motet_summaries_created_total
 ```
 
-Note what is **not** there: no per-command metrics and no worker metrics. For command-level questions use the debug API, and for worker state use `motet-cli workers health`. The `imf_` prefix is historical and predates the Motet name.
+Note what is **not** there: no per-command metrics and no worker metrics. For command-level questions use the debug API, and for worker state use `motet-cli workers health`.
 
 To record your own, get the live registry and use `prometheus_client` directly — `motet.core.observability.metrics` exposes typed helpers such as `observe_tool_latency` and `increment_tool_errors` rather than generic metric constructors:
 
@@ -190,7 +190,7 @@ open http://localhost:8000/manage?task_id=task-123
 
 **A command never runs.** Almost always readiness or capability matching, not a lost message. Check `motet-cli workers readiness` first, since a warming-up worker accepts nothing. Then confirm some worker advertises the capability the command requires — a command requiring one nobody has queues forever instead of failing. `GET /api/v1/debug/commands?command_type=your_command` confirms it was registered and accepted.
 
-**Execution is slow.** Traces are the right tool, because the interesting question is which span dominates. Enable the trace store, reproduce, and read it with `motet-cli traces show`. `imf_tool_latency_seconds` and `imf_model_latency_seconds` tell you whether the time is in tools or the provider; if it is in neither, look at queue wait with `imf_scheduler_queue_wait_seconds`.
+**Execution is slow.** Traces are the right tool, because the interesting question is which span dominates. Enable the trace store, reproduce, and read it with `motet-cli traces show`. `motet_tool_latency_seconds` and `motet_model_latency_seconds` tell you whether the time is in tools or the provider; if it is in neither, look at queue wait with `motet_scheduler_queue_wait_seconds`.
 
 **Commands fail in production.** Filter logs by `task_id` rather than grepping for ERROR, so you get the whole causal chain instead of the last line. `GET /api/v1/debug/commands/{command_id}` returns the input that produced the failure, which is usually the thing you actually need.
 
@@ -222,4 +222,4 @@ Two Grafana dashboards ship in `operations/dashboards/`: one for **API observabi
 
 ---
 
-**Last Updated**: 2026-08-21
+**Last Updated**: 2026-08-28

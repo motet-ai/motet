@@ -875,12 +875,12 @@ logger.warning(
 ### Metrics
 
 **Authentication is the only part of this page with metrics.** Two exist, both
-on the `imf_` prefix:
+on the `motet_` prefix:
 
 | Metric | Labels | Notes |
 |--------|--------|-------|
-| `imf_auth_attempts_total` | `auth_type`, `status` | `auth_type` is `jwt`, `service_account`, `header`, `none` or `error`; `status` is `success` or `failure` |
-| `imf_auth_latency_seconds` | `auth_type` | Histogram of verification time |
+| `motet_auth_attempts_total` | `auth_type`, `status` | `auth_type` is `jwt`, `service_account`, `header`, `none` or `error`; `status` is `success` or `failure` |
+| `motet_auth_latency_seconds` | `auth_type` | Histogram of verification time |
 
 There are **no vault, encryption, or authorization metrics**. Access to a
 credential and a failed role check are visible in logs but are not counted, so
@@ -893,13 +893,13 @@ groups:
 - name: security
   rules:
   - alert: HighFailedAuthRate
-    expr: rate(imf_auth_attempts_total{status="failure"}[5m]) > 10
+    expr: rate(motet_auth_attempts_total{status="failure"}[5m]) > 10
     annotations:
       summary: "High failed authentication rate"
       description: "{{ $value }} failed auth/sec over 5 minutes"
 
   - alert: HeaderAuthInProduction
-    expr: increase(imf_auth_attempts_total{auth_type="header"}[5m]) > 0
+    expr: increase(motet_auth_attempts_total{auth_type="header"}[5m]) > 0
     annotations:
       summary: "Insecure header authentication used"
       description: "Header auth should not succeed in production"
@@ -963,8 +963,8 @@ override.
 **Monitoring & Tool Restrictions**:
 - [ ] `MOTET_FILE_READ_ALLOWLIST` set to the directories tools may read
 - [ ] `MOTET_HTTP_TOOL_ALLOW_DOMAINS` / `..._DENY_DOMAINS` configured
-- [ ] Alerting on `imf_auth_attempts_total{status="failure"}`
-- [ ] Alerting on `imf_auth_attempts_total{auth_type="header"}` — should be zero
+- [ ] Alerting on `motet_auth_attempts_total{status="failure"}`
+- [ ] Alerting on `motet_auth_attempts_total{auth_type="header"}` — should be zero
       in production
 - [ ] Log aggregation captures `Authentication failed` / `Authentication
       throttled` events, since vault and authorization have no metrics

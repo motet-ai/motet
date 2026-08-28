@@ -5,7 +5,7 @@ Copyright (c) 2024-2025 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-28
 
 Description:
     FastAPI-based HTTP interface for the Motet distributed framework.
@@ -870,11 +870,11 @@ def create_app() -> FastAPI:
     from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
     from ..core.observability.metrics import set_registry
     REGISTRY = CollectorRegistry(auto_describe=True)
-    REQ_COUNTER = Counter("imf_requests_total", "Total requests", ["method", "path", "status"], registry=REGISTRY)
-    LATENCY = Histogram("imf_request_latency_seconds", "Request latency", ["method", "path"], registry=REGISTRY)
+    REQ_COUNTER = Counter("motet_requests_total", "Total requests", ["method", "path", "status"], registry=REGISTRY)
+    LATENCY = Histogram("motet_request_latency_seconds", "Request latency", ["method", "path"], registry=REGISTRY)
     # Authentication metrics
-    AUTH_ATTEMPTS = Counter("imf_auth_attempts_total", "Total authentication attempts", ["auth_type", "status"], registry=REGISTRY)
-    AUTH_LATENCY = Histogram("imf_auth_latency_seconds", "Authentication latency", ["auth_type"], registry=REGISTRY)
+    AUTH_ATTEMPTS = Counter("motet_auth_attempts_total", "Total authentication attempts", ["auth_type", "status"], registry=REGISTRY)
+    AUTH_LATENCY = Histogram("motet_auth_latency_seconds", "Authentication latency", ["auth_type"], registry=REGISTRY)
     try:
         set_registry(REGISTRY)
         

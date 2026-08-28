@@ -35,7 +35,7 @@ def test_health_and_chat_e2e():
 
             # metrics route
             r = await client.get("/metrics")
-            assert r.status_code == 200 and "imf_requests_total" in r.text
+            assert r.status_code == 200 and "motet_requests_total" in r.text
 
             # tools endpoint returns schemas (legacy dict) (ADR-0053: /api/v1/tools)
             status, tools_data = await _get_json(client, "GET", "/api/v1/tools", headers=headers)

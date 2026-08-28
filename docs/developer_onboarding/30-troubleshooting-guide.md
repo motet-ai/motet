@@ -78,7 +78,7 @@ celery -A motet.core.workers.celery_app inspect stats
    ```
    - `login_ready: true` → Config and Redis are OK; problem may be Keycloak realm/client or browser (e.g. redirect URI).
    - `login_ready: false` → Read the `errors` array. Common causes:
-     - `MOTET_JWT_JWKS_URL is not set` → API env not set; ensure motet-api has JWT/Keycloak env in your `.env` file (see [Authentication Guide](../operations/authentication.md)).
+     - `MOTET_JWT_JWKS_URL is not set` → API env not set; ensure motet-api has JWT/Keycloak env in your `.env` file (see [Security & Multi-Tenancy](./22-security-multi-tenancy.md) for the JWT settings and [Configuration Reference](./29-configuration-reference.md) for the full variable list).
      - `Keycloak config: ...` → Fix issuer/client/URL (e.g. `MOTET_JWT_ISSUER`, `MOTET_KEYCLOAK_PUBLIC_URL`).
      - `Redis: ...` → API cannot reach Redis; check `MOTET_REDIS_URL` and that `redis-tls` is healthy (`motet-cli local logs redis-tls`). A clean clone has no `tls/` material; `motet-cli local up` writes it before starting the proxy.
 
@@ -419,4 +419,4 @@ When asking for help, provide:
 
 ---
 
-**Last Updated**: 2026-08-27
+**Last Updated**: 2026-08-28

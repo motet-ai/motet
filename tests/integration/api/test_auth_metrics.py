@@ -58,8 +58,8 @@ def test_auth_metrics_exported():
                 metrics_text = response.text
                 
                 # Verify authentication metrics are present
-                assert "imf_auth_attempts_total" in metrics_text, "Auth attempts metric not found"
-                assert "imf_auth_latency_seconds" in metrics_text, "Auth latency metric not found"
+                assert "motet_auth_attempts_total" in metrics_text, "Auth attempts metric not found"
+                assert "motet_auth_latency_seconds" in metrics_text, "Auth latency metric not found"
                 
                 # Verify metrics have labels
                 assert 'auth_type="none"' in metrics_text or 'auth_type="error"' in metrics_text, \

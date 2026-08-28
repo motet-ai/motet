@@ -5,7 +5,7 @@ Copyright (c) 2024-2025 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-06-18
+Last Modified: 2026-08-28
 
 Description:
     Routing circuit breaker for the Motet distributed framework.
@@ -92,27 +92,27 @@ class CircuitBreakerFilter(WorkerFilter):
             try:
                 # Circuit breaker state metrics
                 self._circuit_breaker_states = Gauge(
-                    'imf_circuit_breaker_workers_by_state',
+                    'motet_circuit_breaker_workers_by_state',
                     'Number of workers by circuit breaker state',
                     ['state']
                 )
                 
                 # Circuit breaker filtering metrics
                 self._filtered_workers_total = Counter(
-                    'imf_circuit_breaker_filtered_workers_total',
+                    'motet_circuit_breaker_filtered_workers_total',
                     'Total number of workers filtered by circuit breaker state',
                     ['state', 'action']
                 )
                 
                 # Circuit breaker cache metrics
                 self._cache_size = Gauge(
-                    'imf_circuit_breaker_cache_size',
+                    'motet_circuit_breaker_cache_size',
                     'Number of workers in circuit breaker cache'
                 )
                 
                 # Circuit breaker filtering duration
                 self._filter_duration = Histogram(
-                    'imf_circuit_breaker_filter_duration_seconds',
+                    'motet_circuit_breaker_filter_duration_seconds',
                     'Time spent filtering workers by circuit breaker state'
                 )
                 

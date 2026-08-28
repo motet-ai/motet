@@ -5,7 +5,7 @@ Copyright (c) 2024-2025 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-28
 
 Description:
     Redis-based distributed metrics collector. Workers push samples to Redis;
@@ -272,7 +272,7 @@ def push_tool_latency_metric(worker_id: str, tool_name: str, latency_seconds: fl
         return
     
     metric = MetricSample(
-        name="imf_tool_latency_seconds",
+        name="motet_tool_latency_seconds",
         value=latency_seconds,
         labels={"tool": tool_name, "worker_id": worker_id},
         timestamp=time.time(),
@@ -289,7 +289,7 @@ def push_tool_request_metric(worker_id: str, tool_name: str) -> None:
         return
     
     metric = MetricSample(
-        name="imf_tool_requests_total",
+        name="motet_tool_requests_total",
         value=1,
         labels={"tool": tool_name, "worker_id": worker_id},
         timestamp=time.time(),
@@ -306,7 +306,7 @@ def push_model_latency_metric(worker_id: str, provider: str, model: str, latency
         return
     
     metric = MetricSample(
-        name="imf_model_latency_seconds",
+        name="motet_model_latency_seconds",
         value=latency_seconds,
         labels={"provider": provider, "model": model, "worker_id": worker_id},
         timestamp=time.time(),

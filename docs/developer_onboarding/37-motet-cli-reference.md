@@ -21,8 +21,7 @@ motet-cli debug memory --help
 ### Start local stack
 
 ```bash
-docker login ghcr.io   # eval / invite-only snapshot
-motet-cli local up            # pull published images
+motet-cli local up            # pull published images (login only for a private/eval registry)
 motet-cli local up --build    # rebuild Motet images from this tree
 motet-cli local status
 motet-cli local doctor
@@ -250,4 +249,4 @@ For quick scanning, all top-level groups in alphabetical order:
 
 ---
 
-**Last Updated**: 2026-08-26
+**Last Updated**: 2026-08-28

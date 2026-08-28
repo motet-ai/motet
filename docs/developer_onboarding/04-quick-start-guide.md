@@ -40,8 +40,8 @@ pip install -r requirements.txt
 pip install -e motet-sdk
 pip install -e .
 
-# Start the distributed stack (pulls published images; add --build to rebuild from this tree)
-docker login ghcr.io   # eval / invite-only snapshot
+# Start the distributed stack (pulls published images; add --build to rebuild from this tree).
+# Public ghcr.io/motet-ai images pull without login. Login only for a private/eval registry.
 motet-cli local up
 
 # Check stack status + worker readiness summary
@@ -63,6 +63,21 @@ This starts:
 The stack sets Redis, Postgres, and the rest of the runtime configuration. Model calls still use the key from [Model API key](#model-api-key).
 
 Starting Redis, Postgres, Celery, and the API as host processes — without Compose — is unsupported. Use `motet-cli local up`.
+
+## Log in
+
+The stack seeds a Keycloak realm (`motet`) with two users, so there is nothing to create before you can sign in:
+
+| Username | Password | Use it for |
+|---|---|---|
+| `motet-admin` | `RootPassword1!` | Admin — the Manage app's admin actions and cross-tenant views (`/motet-global` tenant) |
+| `acme-user` | `AcmeUser1!` | Regular user in the sample `acme` org (`/orgs/acme/prod`) |
+
+- **Chat Explorer** (`http://localhost:8000/chat-explorer/`) and **Manage** (`http://localhost:8000/manage/`) show a sign-in page when you are signed out. Click **Login with SSO** and use either user. Admin actions in Manage — terminating workers, deploying bundles — require `motet-admin`.
+- **CLI**: `motet-cli auth login` authenticates with the same users.
+- **Keycloak admin console** (`http://localhost:8080/admin`, `admin` / `admin` by default) is where you add users, orgs, and environments beyond the seeded ones.
+
+These are development defaults. Change them on any shared or hosted stack.
 
 ## Running Your First Command
 
@@ -236,8 +251,7 @@ pip install -r requirements.txt
 pip install -e motet-sdk
 pip install -e .
 
-# Then run
-docker login ghcr.io   # eval / invite-only snapshot
+# Then run (login only if using a private/eval registry)
 motet-cli local up
 ```
 
@@ -358,6 +372,6 @@ If you encounter issues:
 
 ---
 
-**Last Updated**: 2026-08-26
+**Last Updated**: 2026-08-28
 
 **Congratulations!** You've successfully set up Motet. Continue to [Core Concepts Overview](./05-core-concepts-overview.md) to understand how Motet works.
