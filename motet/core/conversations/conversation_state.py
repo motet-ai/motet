@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-06-18
+Last Modified: 2026-08-28
 
 Description:
     Thin facade for conversation state: load history (replay transcripts) and
@@ -57,6 +57,7 @@ def append_turn(
     assistant_response: str,
     *,
     agent_id: Optional[str] = None,
+    thinking_text: Optional[str] = None,
 ) -> dict:
     """
     Append one turn to conversation state (store canonical transcript).
@@ -64,7 +65,13 @@ def append_turn(
     Persists this turn as one conversation_transcript memory. Returns the
     result dict from store_turn_transcript (canonical_transcript_stored, etc.).
     """
-    return store_turn_transcript(motet, messages, assistant_response, agent_id=agent_id)
+    return store_turn_transcript(
+        motet,
+        messages,
+        assistant_response,
+        agent_id=agent_id,
+        thinking_text=thinking_text,
+    )
 
 
 __all__ = ["append_turn", "load_history"]

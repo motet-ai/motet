@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-31
 
 Description:
     Integration-style unit test for conversation_get history replay ordering.
@@ -429,3 +429,31 @@ def test_conversation_get_warns_when_index_has_sealed_rows() -> None:
     assert out["counts"]["memory"] == 6
     assert out["warning"]
     assert "cannot be decrypted" in out["warning"]
+
+
+def test_conversation_get_includes_parent_conversation_id() -> None:
+    conversation_id = "iso-child"
+    fake_motet = SimpleNamespace(
+        motet_id="default",
+        tenant_id="tenant-1",
+        principal_id="principal-1",
+        conversation_id=conversation_id,
+        memory=FakeConversationMemory([]),
+        stack=SimpleNamespace(memory=FakeStackMemory(), vector=None),
+    )
+
+    with (
+        patch("motet.core.commands.builtin.conversation.get_motet_context", return_value=fake_motet),
+        patch(
+            "motet.core.conversations.registry.get_conversation_sync",
+            return_value={
+                "id": conversation_id,
+                "turn_agent_id": "core.subagent",
+                "parent_conversation_id": "conv-parent",
+            },
+        ),
+    ):
+        out = conversation_get.__wrapped__(GetConversationData(conversation_id=conversation_id))
+
+    assert out["turn_agent_id"] == "core.subagent"
+    assert out["parent_conversation_id"] == "conv-parent"

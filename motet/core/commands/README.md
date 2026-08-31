@@ -284,7 +284,7 @@ Distributed commands for the Conversations API: list, get, clear, register, rena
 
 - **`conversations_list`** — List conversations for the principal in the tenant (from motet context); returns id, title, created_at, updated_at.
 - **`conversation_get`** — Get one conversation: history (from canonical `conversation_transcript` replay) plus memory/vector counts. Memory count is the conversation index size (no decrypt). When the index has rows but replay is empty, `warning` explains that stored messages cannot be decrypted. Uses shared helper in `motet.core.conversations.transcript_replay`.
-- **`conversation_clear`** — Remove from registry and clear memory/vector by session tag.
+- **`conversation_clear`** — Remove from registry and clear memory/vector by session tag, including isolated descendants.
 - **`conversation_register`** — Register or touch a conversation in the registry (ensure it exists, update updated_at).
 - **`conversation_rename`** — Update a conversation's display title in the registry.
 

@@ -1261,6 +1261,7 @@ class TestWorkflowForeach:
         mock_motet = Mock()
         mock_motet.task_id = "task_iso"
         mock_motet.conversation_id = "api-exec-parent"
+        mock_motet.tenant_id = None
         mock_motet.event_bus = Mock()
         mock_motet.metadata = {}
         seen_cids = []
@@ -1293,9 +1294,8 @@ class TestWorkflowForeach:
         WorkflowExecutor().execute_workflow(workflow, mock_motet)
 
         assert mock_motet.do.call_count == 2
-        assert seen_cids[0] == "api-exec-parent__implement_chunk_0"
-        assert seen_cids[1] == "api-exec-parent__implement_chunk_1"
         assert seen_cids[0] != seen_cids[1]
+        assert all(cid and str(cid).startswith("iso-") for cid in seen_cids)
         assert all(cid != "api-exec-parent" for cid in seen_cids)
 
     @patch("motet.core.commands.command_type_registry.command_type_registry")

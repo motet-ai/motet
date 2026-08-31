@@ -5,7 +5,7 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-05-05
+ * Last Modified: 2026-08-29
  *
  * Description:
  *     Type definitions for the Chat Explorer frontend.
@@ -31,3 +31,4 @@ export type { DraftUploadItem } from "@motet/ui-common";
 // Re-export request override types from @motet/ui-common
 export type { Overrides, ReasoningEffort } from "@motet/ui-common";
 export type { ArtifactRagScope, RagControlsValue } from "@motet/ui-common";
+export type { CostDisplayPrefs } from "../utils/costDisplay";

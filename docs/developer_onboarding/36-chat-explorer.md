@@ -14,14 +14,19 @@ Both Chat Explorer and the ops dashboard share a common UI library —
 **`@motet/ui-common`** — that provides the hooks, components, types, API clients,
 and chat protocol logic that any Motet frontend application needs.
 
+![Chat Explorer](../images/chat-explorer.png)
+
+*Chat Explorer on a local stack: conversation list (parent plus spawn children), thread with subagent cards, composer, and the agent rail.*
+
 ## What It Is
 
 Chat Explorer is a React application (Ant Design + Ant Design X) that provides:
 
 - **Chat**: Send messages and get streamed AI responses (Agent command, reasoning strategies, tools).
-- **Conversations**: List, switch, rename, and delete conversations (backed by the Conversations API), scoped by agent and surface.
-- **Agent and surface pickers**: In the header. Surface options come from `GET /api/v1/surfaces`, filtered by the selected agent’s `allowed_surface_ids` (null/empty = all catalog surfaces).
-- **Model picker**: One searchable select below the composer. Each option is `provider : model`; Auto leaves routing to the backend. A key icon marks providers with an API key configured (environment or vault). Models that need a key and do not have one stay in the list but cannot be selected. Enable thinking sits to the right; when it is on, reasoning effort appears to the right of the switch.
+- **Conversations**: List, switch, rename, and delete conversations (backed by the Conversations API), scoped by agent and surface. Deleting a chat also deletes its spawned child conversations.
+- **Agent and surface pickers**: In the header. Surface options come from `GET /api/v1/surfaces`, filtered by the selected agent’s `allowed_surface_ids` (null/empty = all catalog surfaces). Agents with `selectable: false` (for example `core.subagent`) are omitted from the new-chat picker; opening a spawn-child conversation still selects that agent for follow-up while the sidebar stays on the parent chat agent.
+- **Model picker**: One searchable select below the composer. Each option is `provider : model`; Auto leaves routing to the backend. A key icon marks providers with an API key configured (environment or vault). Models that need a key and do not have one stay in the list but cannot be selected. Enable thinking sits to the right; when it is on, reasoning effort appears to the right of the switch. When Motet Settings has turn or conversation cost on, priced estimates align to the right of that row. The turn total updates on each priced `usage` frame during the turn, then again on `end`.
+- **Motet Settings**: Sliders icon or the user menu. Watch events and Show errors control the right-rail debug panels. Show agent cost, Show turn cost, and Show conversation cost hide or show each priced USD line independently. Cost prefs persist in `chat_explorer_cost_display` (all three default on).
 - **Attachments**: Upload files (images, PDFs, documents) as artifacts; attach them to messages and preview in the thread.
 - **Retrieval**: Search-icon popover on the composer — This chat, My files, or Workspace. Advanced file IDs and tags stay collapsed. A chip next to the icon shows the current scope; clearing it returns to This chat.
 - **Auth**: JWT, API key, service account, or SSO (OAuth) via the auth and OAuth APIs. When you are signed out, Chat Explorer and Administration show a full-page sign-in landing; the app shell is not on screen. On a local stack, sign in with a seeded Keycloak user — `motet-admin` / `RootPassword1!` or `acme-user` / `AcmeUser1!` (see [Quick Start — Log in](./04-quick-start-guide.md#log-in)).
@@ -72,10 +77,10 @@ Both apps consume `@motet/ui-common` as a workspace dependency. The shared packa
 
 | Category | Exports | Purpose |
 |----------|---------|---------|
-| **Hooks** | `useAuth`, `useConversationManager`, `useAttachments`, `useRequestContext`, `useEventBus`, `useThrottle` | React hooks for auth state, conversation CRUD, file uploads, model/behavior overrides, SSE event subscriptions, and throttled updates. |
+| **Hooks** | `useAuth`, `useConversationManager`, `useAttachments`, `useRequestContext`, `useEventBus`, `useThrottle`, `useLiveTurns` | React hooks for auth state, conversation CRUD, file uploads, model/behavior overrides, SSE event subscriptions, throttled updates, and per-conversation in-flight chat turns. |
 | **Components** | `AuthModal`, `SignedOutPage`, `RenameModal`, `MermaidBlock`, `renderMarkdownWithMermaid`, `RagControls` | Auth dialogs, full-page sign-in landing, conversation rename modal, Markdown with live Mermaid, and retrieval scope chips (This chat / My files / Workspace). |
 | **API Clients** | `listConversations`, `getConversation`, `updateConversationTitle`, `deleteConversation`, `mapHistoryToMessages` | Typed fetch wrappers for the Conversations API (`/api/v1/conversations`). |
-| **Chat Protocol** | `reduceChatEvent`, `streamAgentKeyFromData`, `withAgentStream` | Framework-agnostic SSE event reducer that processes chat stream events into structured state (content, thinking, tool calls, per-agent attribution). |
+| **Chat Protocol** | `reduceChatEvent`, `LiveTurnRegistry`, `consumeChatSse`, `streamAgentKeyFromData`, `withAgentStream` | Framework-agnostic SSE reducer plus a conversation-keyed live-turn map so more than one chat can stream at once. |
 | **Types** | `AuthState`, `SSEvent`, `AgentStreamSlice`, `AgentReasoningPanel`, `AttachmentState`, `Overrides`, `ConversationEntry`, etc. | Shared type definitions for auth, events, multi-agent streaming, attachments, and request overrides. |
 | **Utilities** | `randomId`, `debugLog`, `parseSseBuffer`, `resolveAgentDisplayName`, `shortAgentLabel`, `formatExecutionStatusLine` | SSE buffer parsing, agent display name resolution from registry, and formatting helpers. |
 
@@ -132,7 +137,9 @@ export { useAttachments } from "@motet/ui-common";
 import { useConversationManager, computeInitialConversations } from "@motet/ui-common";
 ```
 
-The chat provider (`chatProvider.ts`) uses `reduceChatEvent` and `withAgentStream` from `@motet/ui-common` to drive the SSE streaming loop, then dispatches the reduced state into React component state.
+The chat provider (`chatProvider.ts`) runs one SSE fetch per conversation through `LiveTurnRegistry` (`reduceChatEvent` + `consumeChatSse`). `useLiveTurns` overlays the visible thread. A second chat can stream without aborting the first.
+
+**`LiveTurnRegistry`** — Map of in-flight turns keyed by `conversation_id`. `applyChunk` reduces that conversation only. `overlayFor(visibleId)` returns the owner message, a projected spawn child, or nothing. `isBusy(visibleId)` is the per-chat composer lock.
 
 ## APIs It Uses
 
@@ -140,7 +147,7 @@ Chat Explorer shows how a client uses Motet's public APIs:
 
 | API | Usage in Chat Explorer |
 |-----|------------------------|
-| **Conversations** (`/api/v1/conversations`) | List conversations (sidebar), get history when switching conversation, rename (PATCH), delete (DELETE). Filtered by `agent_id` + `surface_id`. |
+| **Conversations** (`/api/v1/conversations`) | List conversations (sidebar), get history when switching conversation (not on every live token), rename (PATCH), delete (DELETE). Filtered by `agent_id` + `surface_id`. |
 | **Chat** (`/api/v1/chat`) | POST to send a message and receive a streamed response (SSE). Drives the main chat thread and streaming UX. |
 | **Artifacts** (`/api/v1/artifacts`) | Upload files (multipart POST), associate with `conversation_id`, get preview (GET `/{id}/preview`) for images, delete when user removes attachment. |
 | **Models** (`/api/v1/models`) | List available models for the composer model selector, including `requires_api_key` and `has_api_key` so the picker can mark keyed providers and disable the rest. Catalog: [Supported models](./03a-supported-models.md). |
@@ -161,8 +168,8 @@ Together, these show how to:
 When a conversation involves multiple agents (e.g. an expert-panel bundle with researcher, critic, and synthesizer agents), the backend attaches `agent_id` to SSE stream events (and `parent_agent_id` on nested loops). The frontend uses this to:
 
 1. **Bucket streaming content by agent** — Each agent's tokens, thinking trace, tool executions, and reasoning steps are tracked in a separate `AgentStreamSlice`.
-2. **Render per-agent reasoning panels** — The right sidebar shows collapsible panels for each agent, with its display name resolved from the agent registry via `resolveAgentDisplayName`.
-3. **One assistant bubble per turn** — The selected chat agent owns the bubble. Spawned children (`{parent}.spawn-N`) are labeled Sub-agent N and sit in a scrollable stack (collapsed when the turn finishes) so their write-ups do not push the parent's thinking and synthesis off screen. Reloading a conversation groups consecutive attributed assistant rows from that turn the same way, including spawn children whose write-ups were stored on the parent transcript (reply text only — thinking traces are live-session).
+2. **Render per-agent reasoning panels** — The right sidebar shows a collapsible panel for each agent (including spawn children) as soon as that agent starts thinking. The panel body shows a Thinking spinner while the trace is in progress, not the thinking text (that stays in the bubble or spawn card). Steps and priced cost fill in as they arrive. Display names come from the agent registry via `resolveAgentDisplayName`.
+3. **One assistant bubble per turn** — The selected chat agent owns the bubble. Spawned children are compact cards (title and thinking) on the parent turn; each card opens that child's conversation. Other agents on the same turn (for example expert-panel or roundtable speakers) render as in-thread speaker blocks with name, thinking, and full reply. The spawn brief is stored at mint. While the parent turn is still running, the child view shows that child's live thinking, tokens, and tool steps from the same stream the parent uses. Switching to a different conversation does not copy that live parent turn (or its sub-agents) onto the other chat. Leaving mid-turn keeps that chat's stream running. Another conversation can start its own turn without replacing the first. The composer is busy only on the visible conversation (or a spawn child of an active parent). Coming back overlays that chat's in-flight assistant until `end`. The left list shows registered children titled from the spawn brief. Reloading a parent conversation restores spawn cards from `spawn_children` on the history item, and peer speakers from reconstructed `agentStreams`. Each agent's rail steps come from that agent's stored `tool_summaries` (an empty list means that agent ran no tools). When a row stored `thinking_text` or `tool_summaries`, thinking is restored in the assistant bubble or speaker block and tool summaries on the right-sidebar Step list (newest step on top: live, after switching conversations, and after reload). When Show agent cost is on, each agent panel can show that agent's estimated USD under its steps (updating on priced `usage` frames, then on `end`). The right rail shows a Thinking spinner while an agent is thinking, not the thinking text. Turn and conversation totals align to the right of the model/thinking row when those settings are on and a price is known. Missing cost is hidden, never `$0.00`.
 
 The `streamAgentKeyFromData` utility extracts the agent key from an SSE event payload, and `withAgentStream` is a reducer helper that routes updates into the correct agent bucket.
 
@@ -181,9 +188,9 @@ The `streamAgentKeyFromData` utility extracts the agent key from an SSE event pa
 
 - **App root**: `motet/interfaces/frontend/apps/chat-explorer/`
 - **URL mount**: `/chat-explorer/`
-- **Chat provider**: `chat-explorer/src/chatProvider.ts` — SSE streaming loop using `reduceChatEvent` from `@motet/ui-common`.
+- **Chat provider**: `chat-explorer/src/chatProvider.ts` — one SSE fetch per conversation, folded through `LiveTurnRegistry` / `reduceChatEvent` from `@motet/ui-common`.
 - **Chat processing**: `chat-explorer/src/hooks/useChatProcessing.tsx` — Wires reduced SSE state into React component state, builds per-agent reasoning panels.
-- **Multi-agent chat**: `chat-explorer/src/hooks/useMotetChat.tsx` — Renders one assistant bubble per turn, with sub-agent sections nested inside.
+- **Multi-agent chat**: `chat-explorer/src/hooks/useMotetChat.tsx` — Renders one assistant bubble per turn, with spawn-child cards that open the child conversation and in-thread speaker blocks for peer agents.
 - **Conversations**: `chat-explorer/src/hooks/useConversation.ts` — Wraps `useConversationManager` from `@motet/ui-common` with app-specific defaults.
 - **Right sidebar**: `chat-explorer/src/components/RightSidebar.tsx` — Per-agent collapsible reasoning panels.
 - **Storage**: localStorage keys use the `chat_explorer_*` prefix.
@@ -217,6 +224,6 @@ The shared package has `react`, `react-dom`, `antd`, `@ant-design/x`, and `@ant-
 
 ---
 
-**Last Updated**: 2026-08-28
+**Last Updated**: 2026-08-29
 
 **See the framework in action.** Run Chat Explorer at `/chat-explorer/` and use the APIs it demonstrates to build your own chat or agent UIs.

@@ -47,6 +47,9 @@ def _loop_data(**overrides: Any) -> AgenticLoopData:
         enable_prompt_caching=True,
         usage_accumulator={"input_tokens": 10, "output_tokens": 4},
         media_accumulator=[{"artifact_id": "img-1"}],
+        thinking_parts=["first look", "then decide"],
+        tool_summaries=[{"tool_name": "core.web_search", "status": "success"}],
+        spawn_children=[{"child_conversation_id": "iso-abc", "title": "research"}],
         handback_tool_names=["client.tool"],
         handback_tools=[{"type": "function", "function": {"name": "client.tool"}}],
         agent_id="core.chat",
@@ -77,6 +80,9 @@ def test_from_loop_data_round_trip_preserves_fields() -> None:
     assert restored.observation_cache == data.observation_cache
     assert restored.usage_accumulator == data.usage_accumulator
     assert restored.media_accumulator == data.media_accumulator
+    assert restored.thinking_parts == data.thinking_parts
+    assert restored.tool_summaries == data.tool_summaries
+    assert restored.spawn_children == data.spawn_children
     assert restored.stream_key == data.stream_key
     assert restored.conversation_history == data.conversation_history
 
@@ -95,6 +101,8 @@ def test_recursion_override_decrements_remaining_iterations() -> None:
     assert next_data.remaining_iterations == 3
     assert next_data.usage_accumulator == {"input_tokens": 20}
     assert next_data.used_tool_names == ["core.help", "core.tools_search"]
+    assert next_data.thinking_parts == ["first look", "then decide"]
+    assert next_data.tool_summaries == [{"tool_name": "core.web_search", "status": "success"}]
     assert next_data.model_provider == "anthropic"
 
 
@@ -141,6 +149,9 @@ def test_checkpoint_round_trip_via_codec() -> None:
     assert resumed.stream_key == "task:resume:response"
     assert resumed.tools is not None
     assert resumed.usage_accumulator == {"input_tokens": 10, "output_tokens": 4}
+    assert resumed.thinking_parts == ["first look", "then decide"]
+    assert resumed.tool_summaries == [{"tool_name": "core.web_search", "status": "success"}]
+    assert resumed.spawn_children == [{"child_conversation_id": "iso-abc", "title": "research"}]
     assert resumed.observation_cache == data.observation_cache
 
 
@@ -196,6 +207,9 @@ def test_with_fresh_budget_resets_counters_keeps_tools() -> None:
     assert fresh.model_calls_used == 0
     assert fresh.stalled_iterations == 0
     assert fresh.usage_accumulator is None
+    assert fresh.thinking_parts == []
+    assert fresh.tool_summaries == []
+    assert fresh.spawn_children == []
     assert fresh.used_tool_names == ["core.help"]
     assert fresh.executed_signatures == ["core.help:abc"]
     # Keep-budget resume must not use with_fresh_budget.

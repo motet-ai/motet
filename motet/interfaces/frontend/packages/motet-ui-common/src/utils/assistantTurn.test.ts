@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-30
  *
  * Description:
  *     Unit tests for primary-agent selection, one-turn slice ordering, and
@@ -16,11 +16,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isSpawnAgentId, resolveAgentDisplayName } from "./agents";
 import {
+  asSpawnChildCards,
   assistantTranscriptTurnSlice,
   assistantTurnSlices,
   groupTranscriptAssistantTurns,
   resolvePrimaryAgentKey,
   resolveTranscriptPrimaryAgentKey,
+  spawnCardsForTurn,
+  peerSpeakerSlices,
+  projectLiveSpawnChildMessage,
+  resolveDisplayedLiveMessage,
+  type TranscriptHistoryMessage,
 } from "./assistantTurn";
 import { mapHistoryToMessages } from "../api/conversations";
 
@@ -127,7 +133,7 @@ test("resolveTranscriptPrimaryAgentKey: selected wins, else last row", () => {
 });
 
 test("groupTranscriptAssistantTurns: panel rows become one bubble", () => {
-  const grouped = groupTranscriptAssistantTurns(
+  const grouped = groupTranscriptAssistantTurns<TranscriptHistoryMessage>(
     [
       { role: "user", content: "Run a panel on AI" },
       { role: "assistant", content: "Optimistic take", meta: { agent_id: "expert-panel.optimist" } },
@@ -156,6 +162,39 @@ test("groupTranscriptAssistantTurns: panel rows become one bubble", () => {
   ], "core.default");
   assert.equal(slices.filter((s) => !s.isPrimary).length, 3);
   assert.equal(slices.find((s) => s.isPrimary)?.agentKey, "core.default");
+  const speakers = peerSpeakerSlices(slices.filter((s) => !s.isPrimary), []);
+  assert.deepEqual(
+    speakers.map((s) => s.agentKey),
+    ["expert-panel.optimist", "expert-panel.skeptic", "expert-panel.synthesizer"]
+  );
+  assert.equal(speakers[0].text, "Optimistic take");
+});
+
+test("peerSpeakerSlices: drops spawn children and spawn card keys", () => {
+  const speakers = peerSpeakerSlices(
+    [
+      {
+        agentKey: "expert-panel.optimist",
+        agentName: "Panel Optimist",
+        text: "pro",
+        thinkingText: "look on the bright side",
+        thinkingComplete: true,
+        isPrimary: false,
+      },
+      {
+        agentKey: "core.default.spawn-1",
+        agentName: "Sub-agent 1",
+        text: "Sacramento Austin",
+        thinkingText: "pick two",
+        thinkingComplete: true,
+        isPrimary: false,
+        childConversationId: "iso-abc",
+      },
+    ],
+    [{ child_conversation_id: "iso-abc", agent_id: "core.default.spawn-1", title: "US capitals" }]
+  );
+  assert.equal(speakers.length, 1);
+  assert.equal(speakers[0].agentKey, "expert-panel.optimist");
 });
 
 test("groupTranscriptAssistantTurns: two user turns stay two bubbles", () => {
@@ -174,7 +213,7 @@ test("groupTranscriptAssistantTurns: two user turns stay two bubbles", () => {
 });
 
 test("groupTranscriptAssistantTurns: assistant without agent_id stays separate", () => {
-  const grouped = groupTranscriptAssistantTurns(
+  const grouped = groupTranscriptAssistantTurns<TranscriptHistoryMessage>(
     [
       { role: "user", content: "Hi" },
       { role: "assistant", content: "legacy reply" },
@@ -212,6 +251,89 @@ test("mapHistoryToMessages: keeps parent_agent_id on grouped spawn streams", () 
   assert.equal(streams["core.default.spawn-1"].parent_agent_id, "core.default");
 });
 
+test("mapHistoryToMessages: restores thinking_text onto agentStreams", () => {
+  const mapped = mapHistoryToMessages(
+    [
+      { role: "user", content: "price?" },
+      {
+        role: "assistant",
+        content: "12",
+        agent_id: "core.default.spawn-1",
+        thinking_text: "Look up the list price.",
+      },
+      {
+        role: "assistant",
+        content: "done",
+        agent_id: "core.default",
+        thinking_text: "I should combine the findings.",
+      },
+    ],
+    "core.default"
+  );
+  assert.equal(mapped.length, 2);
+  const streams = mapped[1].meta?.agentStreams as Record<
+    string,
+    { thinkingText?: string; thinkingComplete?: boolean }
+  >;
+  assert.equal(streams["core.default.spawn-1"].thinkingText, "Look up the list price.");
+  assert.equal(streams["core.default.spawn-1"].thinkingComplete, true);
+  assert.equal(streams["core.default"].thinkingText, "I should combine the findings.");
+});
+
+test("mapHistoryToMessages: restores tool_summaries onto agentStreams", () => {
+  const mapped = mapHistoryToMessages(
+    [
+      { role: "user", content: "price?" },
+      {
+        role: "assistant",
+        content: "12",
+        agent_id: "core.default.spawn-1",
+        tool_summaries: [{ tool_name: "core.web_search", status: "success", preview: "list price", step: 1 }],
+      },
+      {
+        role: "assistant",
+        content: "done",
+        agent_id: "core.default",
+        tool_summaries: [{ tool_name: "core.spawn_agents", status: "success" }],
+      },
+    ],
+    "core.default"
+  );
+  assert.equal(mapped.length, 2);
+  const streams = mapped[1].meta?.agentStreams as Record<
+    string,
+    { toolSummaries?: Array<{ tool_name: string; status: string; preview?: string; step?: number }> }
+  >;
+  assert.equal(streams["core.default.spawn-1"].toolSummaries?.[0].tool_name, "core.web_search");
+  assert.equal(streams["core.default.spawn-1"].toolSummaries?.[0].preview, "list price");
+  assert.equal(streams["core.default.spawn-1"].toolSummaries?.[0].step, 1);
+  assert.equal(streams["core.default"].toolSummaries?.[0].tool_name, "core.spawn_agents");
+});
+
+test("mapHistoryToMessages: restores cost_usd onto agentStreams", () => {
+  const mapped = mapHistoryToMessages(
+    [
+      { role: "user", content: "price?" },
+      {
+        role: "assistant",
+        content: "12",
+        agent_id: "core.default.spawn-1",
+        cost_usd: 0.004,
+      },
+      {
+        role: "assistant",
+        content: "done",
+        agent_id: "core.default",
+        cost_usd: 0.011,
+      },
+    ],
+    "core.default"
+  );
+  const streams = mapped[1].meta?.agentStreams as Record<string, { costUsd?: number }>;
+  assert.equal(streams["core.default.spawn-1"].costUsd, 0.004);
+  assert.equal(streams["core.default"].costUsd, 0.011);
+});
+
 test("mapHistoryToMessages: groups a panel transcript", () => {
   const mapped = mapHistoryToMessages(
     [
@@ -227,4 +349,202 @@ test("mapHistoryToMessages: groups a panel transcript", () => {
   const streams = mapped[1].meta?.agentStreams as Record<string, { contentText?: string }>;
   assert.equal(streams["expert-panel.optimist"].contentText, "pro");
   assert.equal(streams["expert-panel.skeptic"].contentText, "con");
+});
+
+test("spawnCardsForTurn: live slices without a child id do not invent one", () => {
+  const cards = spawnCardsForTurn(
+    {},
+    "conv-1",
+    [
+      {
+        agentKey: "core.default.spawn-1",
+        agentName: "Sub-agent 1",
+        text: "Price is $12.",
+        thinkingText: "",
+        thinkingComplete: true,
+        isPrimary: false,
+      },
+    ]
+  );
+  assert.equal(cards.length, 0);
+});
+
+test("asSpawnChildCards: keeps child_conversation_id and drops empty rows", () => {
+  const cards = asSpawnChildCards([
+    { child_conversation_id: "conv-1__spawn_1", title: "research pricing", preview: "price is 12" },
+    { child_conversation_id: "", title: "ignored" },
+    { title: "no id" },
+  ]);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].child_conversation_id, "conv-1__spawn_1");
+  assert.equal(cards[0].title, "research pricing");
+});
+
+test("spawnCardsForTurn: prefers persisted pointers over live slices", () => {
+  const cards = spawnCardsForTurn(
+    {
+      spawn_children: [
+        { child_conversation_id: "conv-1__spawn_1", title: "research pricing" },
+      ],
+    },
+    "conv-1",
+    [
+      {
+        agentKey: "core.default.spawn-1",
+        agentName: "Sub-agent 1",
+        text: "live preview",
+        thinkingText: "",
+        thinkingComplete: true,
+        isPrimary: false,
+      },
+    ]
+  );
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].child_conversation_id, "conv-1__spawn_1");
+  assert.equal(cards[0].title, "research pricing");
+  assert.equal(cards[0].preview, undefined);
+});
+
+test("spawnCardsForTurn: uses childConversationId from a live slice", () => {
+  const cards = spawnCardsForTurn(
+    {},
+    "conv-1",
+    [
+      {
+        agentKey: "core.default.spawn-1",
+        agentName: "Sub-agent 1",
+        text: "Price is $12.",
+        thinkingText: "",
+        thinkingComplete: true,
+        isPrimary: false,
+        childConversationId: "iso-abc",
+      },
+    ]
+  );
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].child_conversation_id, "iso-abc");
+  assert.equal(cards[0].agent_id, "core.default.spawn-1");
+  assert.equal(cards[0].preview, "Price is $12.");
+});
+
+test("mapHistoryToMessages: copies spawn_children onto the parent bubble", () => {
+  const mapped = mapHistoryToMessages(
+    [
+      { role: "user", content: "fan out" },
+      {
+        role: "assistant",
+        content: "here is the synthesis",
+        agent_id: "core.default",
+        spawn_children: [
+          {
+            child_conversation_id: "conv-1__spawn_1",
+            agent_id: "core.default.spawn-1",
+            title: "research pricing",
+            thinking_text: "Look up the list price.",
+            tool_summaries: [{ tool_name: "core.web_search", status: "success", preview: "list price", step: 1 }],
+            cost_usd: 0.004,
+          },
+        ],
+      },
+    ],
+    "core.default"
+  );
+  assert.equal(mapped.length, 2);
+  const cards = mapped[1].meta?.spawn_children as Array<{ child_conversation_id: string; title: string }>;
+  assert.equal(cards[0].child_conversation_id, "conv-1__spawn_1");
+  assert.equal(cards[0].title, "research pricing");
+  const streams = mapped[1].meta?.agentStreams as Record<
+    string,
+    { thinkingText?: string; toolSummaries?: Array<{ tool_name: string }>; costUsd?: number; childConversationId?: string }
+  >;
+  assert.equal(streams["core.default.spawn-1"].thinkingText, "Look up the list price.");
+  assert.equal(streams["core.default.spawn-1"].toolSummaries?.[0].tool_name, "core.web_search");
+  assert.equal(streams["core.default.spawn-1"].costUsd, 0.004);
+  assert.equal(streams["core.default.spawn-1"].childConversationId, "conv-1__spawn_1");
+});
+
+test("projectLiveSpawnChildMessage: one agent slice from the live parent turn", () => {
+  const projected = projectLiveSpawnChildMessage(
+    {
+      role: "assistant",
+      content: "parent plus child",
+      status: "updating",
+      meta: {
+        spawn_children: [
+          { child_conversation_id: "iso-abc", agent_id: "core.default.spawn-1", title: "research" },
+        ],
+        agentStreams: {
+          "core.default": { contentText: "working" },
+          "core.default.spawn-1": {
+            contentText: "price is 12",
+            thinkingText: "look it up",
+            thinkingComplete: false,
+            toolExecutions: [{ tool_name: "core.web_search", status: "executing" }],
+          },
+        },
+      },
+    },
+    "iso-abc"
+  );
+  assert.ok(projected);
+  assert.equal(projected?.content, "price is 12");
+  assert.equal(projected?.status, "updating");
+  const streams = projected?.meta.agentStreams as Record<string, { thinkingText?: string; childConversationId?: string }>;
+  assert.equal(streams["core.default"], undefined);
+  assert.equal(streams["core.default.spawn-1"].thinkingText, "look it up");
+  assert.equal(streams["core.default.spawn-1"].childConversationId, "iso-abc");
+});
+
+test("projectLiveSpawnChildMessage: unknown child is null", () => {
+  assert.equal(
+    projectLiveSpawnChildMessage(
+      {
+        meta: {
+          spawn_children: [{ child_conversation_id: "iso-abc", agent_id: "core.default.spawn-1" }],
+        },
+      },
+      "iso-other"
+    ),
+    null
+  );
+});
+
+test("resolveDisplayedLiveMessage: parent stream stays on the parent chat", () => {
+  const live = { role: "assistant", content: "parent", meta: { agentStreams: { "core.default.spawn-1": {} } } };
+  assert.equal(resolveDisplayedLiveMessage(live, "conv-parent", "conv-parent"), live);
+});
+
+test("resolveDisplayedLiveMessage: spawn child still projects from the parent stream", () => {
+  const live = {
+    role: "assistant",
+    content: "parent plus child",
+    status: "updating",
+    meta: {
+      spawn_children: [
+        { child_conversation_id: "iso-abc", agent_id: "core.default.spawn-1", title: "research" },
+      ],
+      agentStreams: {
+        "core.default.spawn-1": { contentText: "price is 12" },
+      },
+    },
+  };
+  const shown = resolveDisplayedLiveMessage(live, "iso-abc", "conv-parent", { role: "assistant", content: "" });
+  assert.equal(shown?.content, "price is 12");
+});
+
+test("resolveDisplayedLiveMessage: missing display or stream id is not the parent turn", () => {
+  const live = { role: "assistant", content: "parent" };
+  assert.equal(resolveDisplayedLiveMessage(live, "", "conv-parent"), null);
+  assert.equal(resolveDisplayedLiveMessage(live, "conv-parent", ""), null);
+});
+
+test("resolveDisplayedLiveMessage: unrelated chat keeps its own origin message", () => {
+  const live = {
+    role: "assistant",
+    content: "parent",
+    meta: { agentStreams: { "core.default.spawn-1": { contentText: "leaked" } } },
+  };
+  const origin = { role: "assistant", content: "other chat" };
+  assert.equal(resolveDisplayedLiveMessage(live, "conv-other", "conv-parent", origin), origin);
+  assert.equal(resolveDisplayedLiveMessage(live, "conv-other", "conv-parent"), null);
 });

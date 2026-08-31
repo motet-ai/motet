@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Redis-backed checkpoint store for turn lifecycle snapshots. Two writers share
@@ -37,9 +37,9 @@ Motet history ending at the unfinished ``workflow_*`` tool call so resume can
     downward instead of the facade reaching into `reasoning`.
 
     Authority split: the checkpoint owns Motet iteration budget,
-    model-call counters (``model_calls_used`` / ``max_model_calls``), usage and
-    media accumulators, executed signatures, used-tool names, and model/tool
-    settings. Conversation history is recorded for consumers that resume without
+    model-call counters (``model_calls_used`` / ``max_model_calls``), usage,
+    media, and thinking accumulators, executed signatures, used-tool names,
+    and model/tool settings. Conversation history is recorded for consumers that resume without
     supplying their own (elicitation/OAuth flows); external callers that own the
     wire transcript (the OpenAI facade) may override it on resume. Client
     handbacks are same-iteration: ``remaining_iterations`` is not decremented on
@@ -170,6 +170,9 @@ _LOOP_STATE_FIELDS = (
     "enable_prompt_caching",
     "usage_accumulator",
     "media_accumulator",
+    "thinking_parts",
+    "tool_summaries",
+    "spawn_children",
     "skill_refs",
     "inject_meta_tools",
 )
@@ -256,6 +259,9 @@ class TurnCheckpoint(BaseModel):
     # Token counters are ints, the ADR-0018 cost_usd running total is a float.
     usage_accumulator: Optional[Dict[str, Any]] = None
     media_accumulator: List[Dict[str, Any]] = Field(default_factory=list)
+    thinking_parts: List[str] = Field(default_factory=list)
+    tool_summaries: List[Dict[str, Any]] = Field(default_factory=list)
+    spawn_children: List[Dict[str, Any]] = Field(default_factory=list)
     skill_refs: Optional[List[Dict[str, Any]]] = None
     handback_tool_names: Optional[List[str]] = None
     # Externally-owned tool schemas (ADR-0125 §5c.1): restored so a resumed

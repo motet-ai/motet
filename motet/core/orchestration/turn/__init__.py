@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-29
 
 Description:
     The turn lifecycle: everything between "a request arrived" and "the
@@ -87,6 +87,9 @@ from motet.core.orchestration.turn.complete import (
     _validate_and_enrich_media,
     complete_agent_turn,
     extract_response_text,
+    extract_thinking_text,
+    extract_tool_summaries,
+    extract_spawn_children,
     extract_turn_cost,
     extract_turn_usage,
     resolve_turn_model,
@@ -140,6 +143,9 @@ __all__ = [
     "_validate_and_enrich_media",
     "complete_agent_turn",
     "extract_response_text",
+    "extract_thinking_text",
+    "extract_tool_summaries",
+    "extract_spawn_children",
     "extract_turn_cost",
     "extract_turn_usage",
     "resolve_turn_model",

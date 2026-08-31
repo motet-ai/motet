@@ -6,16 +6,16 @@ Understanding Motet's codebase organization helps you navigate efficiently and f
 
 ```mermaid
 flowchart TB
-    imf[imf/]
-    imf --> motet[motet/ - Runtime]
-    imf --> sdk[motet-sdk/ - Bundle author SDK]
-    imf --> tests[tests/]
-    imf --> docs[docs/]
-    imf --> config[config/]
-    imf --> docker[docker/]
-    imf --> hosting[hosting/]
-    imf --> operations[operations/]
-    imf --> scripts[scripts/]
+    root[.]
+    root --> motet[motet/ - Runtime]
+    root --> sdk[motet-sdk/ - Bundle author SDK]
+    root --> tests[tests/]
+    root --> docs[docs/]
+    root --> config[config/]
+    root --> docker[docker/]
+    root --> hosting[hosting/]
+    root --> operations[operations/]
+    root --> scripts[scripts/]
 
     motet --> core[core/ - Business logic]
     motet --> interfaces[interfaces/ - HTTP, API, Frontend]
@@ -122,7 +122,7 @@ frontend/
     └── motet-ui-common/       # Shared UI library (@motet/ui-common)
 ```
 
-**`@motet/ui-common`** is the shared package providing hooks (`useAuth`, `useConversationManager`, `useAttachments`, `useRequestContext`), components (`AuthModal`, `MermaidBlock`, `RenameModal`), API clients (conversations CRUD), chat protocol reducer (`reduceChatEvent`), and shared types. Both apps import from this package. See [Chat Explorer & Shared UI Library](./36-chat-explorer.md) for details.
+**`@motet/ui-common`** is the shared package providing hooks (`useAuth`, `useConversationManager`, `useAttachments`, `useRequestContext`, `useLiveTurns`), components (`AuthModal`, `MermaidBlock`, `RenameModal`), API clients (conversations CRUD), chat protocol reducer (`reduceChatEvent`), live-turn map (`LiveTurnRegistry`), and shared types. Both apps import from this package. See [Chat Explorer & Shared UI Library](./36-chat-explorer.md) for details.
 
 ### `tests/`
 
@@ -234,6 +234,6 @@ pytest tests/unit/test_my_module.py
 
 ---
 
-**Last Updated**: 2026-08-27
+**Last Updated**: 2026-08-29
 
 **Ready for resources?** Continue to [Resources & Links](./34-resources-links.md).

@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-08
+Last Modified: 2026-08-31
 
 Description:
     Unit tests for serialize_agent_config covering model, loop limits, skills,
@@ -75,6 +75,7 @@ def test_serialize_agent_config_includes_model_skills_and_metadata() -> None:
     assert payload["skill_mode"] == "discovery"
     assert payload["skill_max_per_turn"] == 2
     assert payload["allowed_surface_ids"] == ["openai_compat"]
+    assert payload["selectable"] is True
     assert payload["turn_hooks"]["context_prepare"] == "core.prepare_context"
 
 
@@ -102,3 +103,18 @@ def test_serialize_agent_config_defaults_for_core_agent() -> None:
     assert payload["skill_ids"] is None
     assert payload["skill_mode"] == "allowlist"
     assert payload["skill_max_per_turn"] == 3
+    assert payload["selectable"] is True
+
+
+def test_serialize_agent_config_includes_selectable_false() -> None:
+    cfg = AgentConfig(
+        agent_id="subagent",
+        system_prompt="Worker.",
+        selectable=False,
+    )
+    with patch(
+        "motet.core.surfaces.resolve_effective_allowlist",
+        return_value=None,
+    ):
+        payload = serialize_agent_config(cfg)
+    assert payload["selectable"] is False

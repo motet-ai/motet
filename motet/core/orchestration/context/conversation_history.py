@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-05-04
+Last Modified: 2026-08-29
 
 Description:
     Implements the conversation-history stage of the prepare_context pipeline.
@@ -74,6 +74,20 @@ class ConversationHistoryProvider:
                     t0 = time.perf_counter()
                     tuples = load_history(motet, motet.conversation_id, limit=100)
                     conversation_history = [msg for _, msg in tuples]
+                    for hist_msg in conversation_history:
+                        meta = getattr(hist_msg, "metadata", None)
+                        if isinstance(meta, dict) and (
+                            "thinking_text" in meta
+                            or "tool_summaries" in meta
+                            or "cost_usd" in meta
+                            or "spawn_children" in meta
+                        ):
+                            cleaned = dict(meta)
+                            cleaned.pop("thinking_text", None)
+                            cleaned.pop("tool_summaries", None)
+                            cleaned.pop("cost_usd", None)
+                            cleaned.pop("spawn_children", None)
+                            hist_msg.metadata = cleaned
                     state.messages = merge_conversation_history(state.messages, conversation_history)
                     state.messages, sanitize_stats = sanitize_orphan_tool_call_messages(state.messages)
                     if sanitize_stats["removed_assistant_calls"] > 0 or sanitize_stats["removed_tool_messages"] > 0:

@@ -28,14 +28,6 @@ pip install -e motet-sdk && pip install -e .
 motet-cli local up
 ```
 
-Convenience images live at `ghcr.io/motet-ai` and use the product version tag. An eval (invite-only) snapshot needs `docker login ghcr.io`. A public Motet release uses the same tags without login. Use `motet-cli local up --build` when you are changing Motet itself.
-
-- **[Developer onboarding](docs/developer_onboarding/README.md)** — concepts, commands, bundles, MCP
-- **[Architecture](docs/architecture/current/README.md)** — topology and runtime invariants; read the index plus the one chapter you need
-- **[Quick start](docs/developer_onboarding/04-quick-start-guide.md)** — env, first command, local chat
-- **[Local development](docs/developer_onboarding/14-local-development-setup.md)** — Docker workflow
-- **[Your first bundle](docs/developer_onboarding/15a-your-first-bundle.md)** — write an extension: package commands and tools, deploy to the running stack, no core changes
-
 With the stack up:
 
 | App | URL | Role |
@@ -43,7 +35,23 @@ With the stack up:
 | **Chat Explorer** | `/chat-explorer/` | Reference chat: agents, conversations, artifacts, streaming |
 | **Manage** | `/manage/` | Full admin console: live worker fleet, bundle deploys, schedules, artifacts, spend, and per-task trace visualization |
 
+*Chat Explorer — conversations, parallel sub-agents, thinking, and per-turn cost.*
+
+![Chat Explorer](docs/images/chat-explorer.png)
+
+*Manage — live worker fleet, capacity, and warmup from the first `local up`.*
+
+![Manage](docs/images/manage-workers.png)
+
 Administration and monitoring are part of the runtime, not an add-on: Manage gives you a comprehensive window into what your agents are doing — which workers are healthy, what a task actually executed (rendered as a command graph), where the time and money went — from the first `local up`. Both apps ship with the runtime. Build your own surfaces on the same APIs (`@motet/ui-common` is the shared UI kit). Details: [Chat Explorer](docs/developer_onboarding/36-chat-explorer.md), [Observability](docs/developer_onboarding/23-observability-debugging.md).
+
+Convenience images live at `ghcr.io/motet-ai` and use the product version tag. An eval (invite-only) snapshot needs `docker login ghcr.io`. A public Motet release uses the same tags without login. Use `motet-cli local up --build` when you are changing Motet itself.
+
+- **[Developer onboarding](docs/developer_onboarding/README.md)** — concepts, commands, bundles, MCP
+- **[Architecture](docs/architecture/current/README.md)** — topology and runtime invariants; read the index plus the one chapter you need
+- **[Quick start](docs/developer_onboarding/04-quick-start-guide.md)** — env, first command, local chat
+- **[Local development](docs/developer_onboarding/14-local-development-setup.md)** — Docker workflow
+- **[Your first bundle](docs/developer_onboarding/15a-your-first-bundle.md)** — write an extension: package commands and tools, deploy to the running stack, no core changes
 
 ## Capabilities
 

@@ -5,7 +5,7 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-31
  *
  * Description:
  *     Top application header bar providing authentication controls and settings.
@@ -17,12 +17,12 @@
  *     - Unauthenticated: Motet Settings + Auth Settings icon buttons.
  *     - Theme: Moon/sun icon button for one-click dark/light toggle (same pattern as manage app).
  *     - Agent and surface Selects in the header (surface list filtered by agent allow-list).
- *     - Settings popup: Watch events, Show errors.
+ *     - Settings popup: Watch events, Show errors, cost display toggles.
  *
  * Dependencies:
  *     - Ant Design: Button, Dropdown, Flex, Layout, Modal, Select, Space, Switch, Tooltip, Typography
  *     - @ant-design/icons: LogoutOutlined, MoonOutlined, SettingOutlined, SlidersOutlined, SunOutlined, UserOutlined
- *     - ../types: AuthState
+ *     - ../types: AuthState, CostDisplayPrefs
  *
  * Usage:
  *     <ChatHeader
@@ -38,7 +38,8 @@
 import React, { useMemo, useState } from "react";
 import { Button, Dropdown, Flex, Layout, Modal, Select, Space, Switch, Tooltip, Typography } from "antd";
 import { LogoutOutlined, MoonOutlined, SettingOutlined, SlidersOutlined, SunOutlined, UserOutlined } from "@ant-design/icons";
-import { type AuthState } from "../types";
+import { type AuthState, type CostDisplayPrefs } from "../types";
+import { COST_DISPLAY_TOGGLES } from "../utils/costDisplay";
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -47,6 +48,7 @@ type AgentInfo = {
   qualified_id: string;
   display_name?: string;
   allowed_surface_ids?: string[] | null;
+  selectable?: boolean;
 };
 
 type SurfaceInfo = {
@@ -84,6 +86,10 @@ interface ChatHeaderProps {
   showErrors: boolean;
   /** Callback to toggle error visibility */
   setShowErrors: (checked: boolean) => void;
+  /** Which priced cost lines to show */
+  costDisplay: CostDisplayPrefs;
+  /** Replace cost-display prefs */
+  onCostDisplayChange: (next: CostDisplayPrefs) => void;
 
   /** Available agents from `/api/v1/agents` */
   availableAgents: AgentInfo[];
@@ -97,6 +103,23 @@ interface ChatHeaderProps {
   selectedSurfaceId: string;
   /** Callback when user selects a surface */
   onSelectSurfaceId: (surfaceId: string) => void;
+}
+
+function SettingsSwitch({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <Flex justify="space-between" align="center">
+      <Text>{label}</Text>
+      <Switch checked={checked} onChange={onChange} />
+    </Flex>
+  );
 }
 
 export function ChatHeader({
@@ -113,6 +136,8 @@ export function ChatHeader({
   setWatchEvents,
   showErrors,
   setShowErrors,
+  costDisplay,
+  onCostDisplayChange,
   availableAgents,
   selectedAgentId,
   onSelectAgentId,
@@ -120,16 +145,21 @@ export function ChatHeader({
   selectedSurfaceId,
   onSelectSurfaceId,
 }: ChatHeaderProps) {
-  const agentOptions = useMemo(
-    () =>
-      (availableAgents || []).map((a) => ({
+  const agentOptions = useMemo(() => {
+    const current = String(selectedAgentId || "").trim();
+    const options = (availableAgents || [])
+      .filter((a) => a.selectable !== false || a.qualified_id === current)
+      .map((a) => ({
         value: String(a.qualified_id || ""),
         label: a.display_name
           ? `${a.display_name} (${a.qualified_id})`
           : String(a.qualified_id || ""),
-      })),
-    [availableAgents],
-  );
+      }));
+    if (current && !options.some((o) => o.value === current)) {
+      options.unshift({ value: current, label: `${current} (current)` });
+    }
+    return options;
+  }, [availableAgents, selectedAgentId]);
 
   const surfaceOptions = useMemo(() => {
     const agentId = String(selectedAgentId || "").trim() || "core.default";
@@ -292,18 +322,20 @@ export function ChatHeader({
             open={settingsOpen}
             onCancel={() => setSettingsOpen(false)}
             footer={null}
-            width={320}
+            width={360}
             styles={{ body: { paddingTop: 8 } }}
           >
             <Space orientation="vertical" style={{ width: "100%" }} size="middle">
-              <Flex justify="space-between" align="center">
-                <Text>Watch events</Text>
-                <Switch checked={watchEvents} onChange={setWatchEvents} />
-              </Flex>
-              <Flex justify="space-between" align="center">
-                <Text>Show errors</Text>
-                <Switch checked={showErrors} onChange={setShowErrors} />
-              </Flex>
+              <SettingsSwitch label="Watch events" checked={watchEvents} onChange={setWatchEvents} />
+              <SettingsSwitch label="Show errors" checked={showErrors} onChange={setShowErrors} />
+              {COST_DISPLAY_TOGGLES.map(({ key, label }) => (
+                <SettingsSwitch
+                  key={key}
+                  label={label}
+                  checked={costDisplay[key]}
+                  onChange={(checked) => onCostDisplayChange({ ...costDisplay, [key]: checked })}
+                />
+              ))}
             </Space>
           </Modal>
         </Space>

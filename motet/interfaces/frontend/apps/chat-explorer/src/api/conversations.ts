@@ -15,6 +15,7 @@
 export {
   listConversations,
   getConversation,
+  getConversationCost,
   updateConversationTitle,
   deleteConversation,
   mapHistoryToMessages,

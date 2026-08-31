@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-29
 
 Description:
     Distributed model inference command system for the Motet distributed framework.
@@ -1069,6 +1069,15 @@ def _handle_stream_event(
 # ================================================================================================
 
 
+def _root_conversation_id_from_motet(motet: Any) -> Optional[str]:
+    """Denormalized root for isolated child cost rollup, if present."""
+    meta = getattr(motet, "metadata", None)
+    if not isinstance(meta, dict):
+        return None
+    root = str(meta.get("root_conversation_id") or "").strip()
+    return root or None
+
+
 def _track_inference_cost(
     result: Dict[str, Any],
     motet,
@@ -1095,6 +1104,7 @@ def _track_inference_cost(
             conversation_id=motet.conversation_id,
             command_id=motet.command_id,
             principal_id=getattr(motet, "principal_id", None) or None,
+            root_conversation_id=_root_conversation_id_from_motet(motet),
         )
         result["cost_usd"] = cost_usd
     except Exception as e:
@@ -1858,6 +1868,7 @@ def model_stream(data: ModelStreamData) -> Dict[str, Any]:
             conversation_id=motet.conversation_id,
             command_id=motet.command_id,
             principal_id=getattr(motet, "principal_id", None) or None,
+            root_conversation_id=_root_conversation_id_from_motet(motet),
         )
         result["cost_usd"] = cost_usd
     except Exception as e:

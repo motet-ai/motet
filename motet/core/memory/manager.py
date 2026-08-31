@@ -5,7 +5,7 @@ Copyright (c) 2024-2025 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-20
+Last Modified: 2026-08-29
 
 Description:
     Comprehensive memory manager for the Motet distributed framework.
@@ -15,6 +15,10 @@ Description:
     memory coordination.
     Conversation-scoped stores auto-add ``conversation:{id}`` tags so
     ``hybrid_retrieve`` conversation filtering can see them.
+    ``store_memory`` files an item under ``metadata["conversation_id"]`` when
+    set (falling back to the caller's context id), so a command can write
+    rows onto another conversation — e.g. spawn_agents persisting a child's
+    first turn from the parent's tool context.
 
 Dependencies:
     - typing: Type hints and annotations
@@ -402,13 +406,18 @@ class MemoryManager:
         principal_id = identity_context.principal_id
         conversation_id = identity_context.conversation_id
         
-        # Extract conversation_id from metadata if not in motet_context
+        # Explicit metadata conversation_id wins over the caller's context so a
+        # command can write rows onto another conversation (e.g. spawn_agents
+        # persisting a child's turn from the parent's tool context). The item
+        # is indexed and tagged under this id — using the context id here
+        # would file the row on the wrong conversation.
         meta = metadata or {}
         if getattr(identity_context, "agent_id", None):
             meta = dict(meta)
             meta.setdefault("agent_id", identity_context.agent_id)
-        if not conversation_id and "conversation_id" in meta:
-            conversation_id = meta["conversation_id"]
+        meta_conversation_id = str(meta.get("conversation_id") or "").strip()
+        if meta_conversation_id:
+            conversation_id = meta_conversation_id
 
         agent_tag = None
         if getattr(identity_context, "agent_id", None):

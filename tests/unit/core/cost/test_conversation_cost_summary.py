@@ -132,17 +132,23 @@ def test_totals_write_and_exact_read(fake_redis: FakeRedis) -> None:
 def test_include_children_rollup(fake_redis: FakeRedis) -> None:
     service = CostTrackingService()
     parent = "api-exec-parent"
+    child_a = "iso-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    child_b = "iso-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     service._update_conversation_totals("motet-global", parent, _event(cost_usd=0.10, total_tokens=10))
     service._update_conversation_totals(
-        "motet-global", f"{parent}__implement_chunk_0", _event(cost_usd=0.20, total_tokens=20)
+        "motet-global",
+        child_a,
+        {**_event(cost_usd=0.20, total_tokens=20), "root_conversation_id": parent},
     )
     service._update_conversation_totals(
         "motet-global",
-        f"{parent}__review",
-        _event(cost_usd=0.05, total_tokens=5, model="gpt-5.2", provider="openai"),
+        child_b,
+        {
+            **_event(cost_usd=0.05, total_tokens=5, model="gpt-5.2", provider="openai"),
+            "root_conversation_id": parent,
+        },
     )
-    # Similar-looking id without the __ separator is a different conversation.
-    service._update_conversation_totals("motet-global", f"{parent}Xother", _event(cost_usd=9.99, total_tokens=999))
+    service._update_conversation_totals("motet-global", "unrelated", _event(cost_usd=9.99, total_tokens=999))
 
     exact = service.get_conversation_cost_summary("motet-global", parent)
     assert exact["event_count"] == 1
@@ -153,19 +159,20 @@ def test_include_children_rollup(fake_redis: FakeRedis) -> None:
     assert rolled["cost_usd"] == 0.35
     assert rolled["total_tokens"] == 35
     assert rolled["include_children"] is True
-    assert rolled["child_conversation_ids"] == [
-        f"{parent}__implement_chunk_0",
-        f"{parent}__review",
-    ]
+    assert rolled["child_conversation_ids"] == [child_a, child_b]
     assert set(rolled["models"]) == {"grok-4.5", "gpt-5.2"}
     assert set(rolled["providers"]) == {"xai", "openai"}
 
 
-def test_children_indexed_under_root_not_immediate_parent(fake_redis: FakeRedis) -> None:
-    """Nested child ids (parent__a__b) roll up to the root parent."""
+def test_children_indexed_under_explicit_root(fake_redis: FakeRedis) -> None:
+    """Nested isolation rolls cost up to the stored root, not the immediate parent."""
     service = CostTrackingService()
-    service._update_conversation_totals("t", "root__a__b", _event(cost_usd=0.01, total_tokens=1))
-    assert "root__a__b" in fake_redis.smembers("t:cost:conversation:t:root:children")
+    service._update_conversation_totals(
+        "t",
+        "iso-child",
+        {**_event(cost_usd=0.01, total_tokens=1), "root_conversation_id": "root"},
+    )
+    assert "iso-child" in fake_redis.smembers("t:cost:conversation:t:root:children")
 
 
 def test_totals_keys_have_ttl(fake_redis: FakeRedis) -> None:

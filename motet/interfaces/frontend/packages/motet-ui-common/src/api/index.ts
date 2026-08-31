@@ -28,6 +28,9 @@ export type {
   ListConversationsParams,
 } from "./conversations";
 
+export { getConversationCost } from "./cost";
+export type { ConversationCostResponse } from "./cost";
+
 export {
   reduceChatEvent,
   streamAgentKeyFromData,

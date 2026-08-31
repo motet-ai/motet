@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-31
 
 Description:
     Runtime MotetContext and resource helpers for decorator-based commands
@@ -841,7 +841,7 @@ class MotetConversationsHelper:
         return self._motet.do(conversation_get, data=GetConversationData(conversation_id=conversation_id))
 
     def clear(self, conversation_id: str) -> Dict[str, Any]:
-        """Clear a conversation (registry + memory/vector). Delegates to conversation_clear. Requires task context."""
+        """Clear a conversation and isolated descendants (registry + memory/vector). Delegates to conversation_clear. Requires task context."""
         if not getattr(self._motet, "task_id", None):
             raise RuntimeError(
                 "motet.conversations.clear requires task context; use motet.do(conversation_clear, data=...) when outside a command"

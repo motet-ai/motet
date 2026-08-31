@@ -5,7 +5,7 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-27
+ * Last Modified: 2026-08-30
  *
  * Description:
  *     Collapsible left sidebar containing the conversation list and controls.
@@ -19,6 +19,7 @@
  *     - Context menu on each conversation with Rename/Delete options
  *     - Tooltip with the full title when the list label is truncated
  *     - Active conversation highlighting
+ *     - Spinner to the left of the title while that chat's turn is in flight
  *     - Graceful handling of collapsed state (hides list)
  *     - List label is "New Chat" when title is unset; custom / auto titles otherwise
  *     - Memoized so chat-stream re-renders do not rebuild the list or close menus
@@ -44,7 +45,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, Layout, Modal, Space, Tooltip } from "antd";
-import { MenuUnfoldOutlined, MenuFoldOutlined, PlusOutlined, SyncOutlined, EditOutlined, DeleteOutlined, ClearOutlined } from "@ant-design/icons";
+import { MenuUnfoldOutlined, MenuFoldOutlined, PlusOutlined, SyncOutlined, EditOutlined, DeleteOutlined, ClearOutlined, LoadingOutlined } from "@ant-design/icons";
 import { Conversations } from "@ant-design/x";
 
 const { Sider } = Layout;
@@ -100,6 +101,8 @@ interface LeftSidebarProps {
   setCollapsed: (collapsed: boolean) => void;
   /** Array of conversation objects from useConversation */
   conversations: any[];
+  /** Conversation ids with an in-flight turn (spinner beside the title). */
+  inFlightConversationIds?: ReadonlySet<string>;
   /** Currently active conversation key */
   activeKey: string;
   /** Callback to create a new conversation */
@@ -121,6 +124,7 @@ function sidebarPropsEqual(prev: LeftSidebarProps, next: LeftSidebarProps): bool
     prev.collapsed === next.collapsed &&
     prev.activeKey === next.activeKey &&
     prev.conversations === next.conversations &&
+    prev.inFlightConversationIds === next.inFlightConversationIds &&
     prev.onNewConversation === next.onNewConversation &&
     prev.onSelectConversation === next.onSelectConversation &&
     prev.onRenameConversation === next.onRenameConversation &&
@@ -140,6 +144,7 @@ function LeftSidebarInner({
   collapsed,
   setCollapsed,
   conversations,
+  inFlightConversationIds,
   activeKey,
   onNewConversation,
   onSelectConversation,
@@ -165,7 +170,7 @@ function LeftSidebarInner({
     const title = conversationListLabel(match || { key });
     Modal.confirm({
       title: "Delete this conversation?",
-      content: `${title} will be permanently deleted. This cannot be undone.`,
+      content: `${title} will be permanently deleted, including any spawned child chats. This cannot be undone.`,
       okText: "Delete",
       okButtonProps: { danger: true },
       cancelText: "Cancel",
@@ -175,12 +180,22 @@ function LeftSidebarInner({
 
   const items = useMemo(
     () =>
-      conversations.map((conv: any) => ({
-        key: conv.key,
-        label: <ConversationTitle title={conversationListLabel(conv)} />,
-        timestamp: conv.timestamp,
-      })),
-    [conversations],
+      conversations.map((conv: any) => {
+        const inFlight = !!inFlightConversationIds?.has(conv.key);
+        return {
+          key: conv.key,
+          icon: inFlight ? (
+            <LoadingOutlined
+              spin
+              className="conversation-in-flight-icon"
+              aria-label="Responding"
+            />
+          ) : undefined,
+          label: <ConversationTitle title={conversationListLabel(conv)} />,
+          timestamp: conv.timestamp,
+        };
+      }),
+    [conversations, inFlightConversationIds],
   );
 
   const conversationMenu = useCallback(

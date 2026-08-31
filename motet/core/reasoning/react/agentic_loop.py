@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-23
+Last Modified: 2026-08-29
 
 Description:
     One in-process ReAct iteration (model → tools → observation). Not a Celery
@@ -42,6 +42,8 @@ Notes:
       worker brief; live remaining counts stay here for every Motet-owned
       turn. A rail stop then asks for one tools-off write-up so partial
       findings survive instead of scaffolding text.
+    - After each real model fold the loop emits ``usage`` with the running
+      token envelope and top-level ``cost_usd`` when priced.
 """
 
 import json
@@ -66,7 +68,14 @@ from .loop_execution import (
     prefilled_stream_data,
     validate_prefilled_tool_calls,
 )
-from .loop_results import accumulate_usage, build_loop_result
+from .loop_results import (
+    accumulate_usage,
+    build_loop_result,
+    emit_usage_event,
+    empty_usage_accumulator,
+    extend_tool_summaries,
+    join_thinking_text,
+)
 from .loop_skills import (
     ATTACHMENT_TOOL_NAMES,
     conversation_has_attachments,
@@ -78,6 +87,33 @@ from ...types import CanonicalToolSchema, Message, RequestContext, tool_schema_n
 from ..reasoning_events import emit_reasoning_event
 
 logger = structlog.get_logger(__name__)
+
+
+def _record_thinking_part(data: AgenticLoopData, reasoning_content: Any) -> None:
+    """Keep this loop's provider reasoning for display persist."""
+    text = join_thinking_text(reasoning_content)
+    if text:
+        data.thinking_parts.append(text)
+
+
+def _emit_loop_result(data: AgenticLoopData, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """build_loop_result plus this loop's accumulated thinking, tool summaries, and spawn cards."""
+    kwargs.setdefault("thinking_text", join_thinking_text(*data.thinking_parts))
+    kwargs.setdefault("tool_summaries", list(data.tool_summaries or []))
+    kwargs.setdefault("spawn_children", list(data.spawn_children or []))
+    return build_loop_result(*args, **kwargs)
+
+
+def _fold_model_usage(
+    motet: Any,
+    data: AgenticLoopData,
+    accumulated_usage: Dict[str, Any],
+    stream_data: Optional[Dict[str, Any]],
+) -> None:
+    """Fold this model call into the running total and emit a chat ``usage`` frame."""
+    accumulate_usage(accumulated_usage, stream_data or {})
+    emit_usage_event(motet, accumulated_usage, stream_key=data.stream_key)
+
 
 # Consecutive iterations of repeat-only tool calls before the turn is stopped.
 # Two is normal (a re-read after an edit, a status poll); a sustained run means the
@@ -281,8 +317,9 @@ def _try_finalize_writeup(
         return None
 
     data.model_calls_used = int(data.model_calls_used or 0) + 1
-    accumulate_usage(accumulated_usage, stream_data or {})
+    _fold_model_usage(motet, data, accumulated_usage, stream_data)
     content = str((stream_data or {}).get("final_content") or "").strip()
+    _record_thinking_part(data, (stream_data or {}).get("reasoning_content"))
     _append_assistant_message(history, content=content, tool_calls=[])
     if not content:
         logger.warning(
@@ -341,7 +378,7 @@ def _replace_stop_with_finalize(
         stop_reason=str(result.get("stop_reason") or ""),
         accumulated_usage=accumulated_usage,
     )
-    return build_loop_result(
+    return _emit_loop_result(data,
         message,
         list(result.get("tool_results") or []),
         iterations_used,
@@ -728,7 +765,7 @@ def _maybe_stop_for_spend(
             max_cost_usd=max_cost,
             stream_key=data.stream_key,
         )
-        return build_loop_result(
+        return _emit_loop_result(data,
             (
                 f"Stopped: this turn reached its cost ceiling "
                 f"(${cost:.2f} of ${max_cost:.2f}). "
@@ -754,7 +791,7 @@ def _maybe_stop_for_spend(
             max_prompt_tokens=max_prompt,
             stream_key=data.stream_key,
         )
-        return build_loop_result(
+        return _emit_loop_result(data,
             (
                 f"Stopped: this turn reached its prompt-token ceiling "
                 f"({prompt_tokens} of {max_prompt}). "
@@ -782,7 +819,7 @@ def _maybe_stop_for_spend(
         )
         elapsed_s = tool_time_ms / 1000.0
         ceiling_s = max_tool_time / 1000.0
-        return build_loop_result(
+        return _emit_loop_result(data,
             (
                 f"Stopped: this turn reached its tool-time ceiling "
                 f"({elapsed_s:.1f}s of {ceiling_s:.0f}s). "
@@ -868,7 +905,7 @@ def _maybe_stop_for_stall(
         stream_key=data.stream_key,
     )
     # Non-empty message: budget/stop paths must say something on the wire (ADR-0127).
-    return build_loop_result(
+    return _emit_loop_result(data,
         f"Stopped: the last {data.stalled_iterations} steps requested only "
         "information already gathered in this turn, so the task is not progressing. "
         "Please continue with a different approach.",
@@ -901,14 +938,8 @@ def agentic_loop(data: AgenticLoopData) -> Dict[str, Any]:
     }
     
     # Accumulated usage tracking (ADR-0064 R9: canonical usage envelope)
-    accumulated_usage = dict(data.usage_accumulator or {})
-    accumulated_usage.setdefault("prompt_tokens", 0)
-    accumulated_usage.setdefault("completion_tokens", 0)
-    accumulated_usage.setdefault("total_tokens", 0)
-    accumulated_usage.setdefault("cache_read_tokens", 0)
-    accumulated_usage.setdefault("cache_creation_tokens", 0)
-    accumulated_usage.setdefault("reasoning_tokens", 0)
-    accumulated_usage.setdefault("tool_time_ms", 0)
+    accumulated_usage = empty_usage_accumulator()
+    accumulated_usage.update(data.usage_accumulator or {})
 
     # ADR-0113: media (e.g. generated images) accumulated across recursive iterations.
     # Seeded from the caller so earlier iterations' media survive to the terminal return.
@@ -1076,7 +1107,7 @@ def agentic_loop(data: AgenticLoopData) -> Dict[str, Any]:
                 error=prefill_error,
                 stream_key=data.stream_key,
             )
-            return build_loop_result(
+            return _emit_loop_result(data,
                 f"Prefilled tool call rejected: {prefill_error}",
                 [], iterations_used, "error", accumulated_usage,
             )
@@ -1230,12 +1261,13 @@ def agentic_loop(data: AgenticLoopData) -> Dict[str, Any]:
         finish_reason = stream_data.get("finish_reason", "stop")
         reasoning_content = stream_data.get("reasoning_content")
         reasoning_blocks = stream_data.get("reasoning_blocks")
+        _record_thinking_part(data, reasoning_content)
 
         # Count real model inferences only (prefilled first action is not a model call).
         if not prefilled:
             data.model_calls_used = int(data.model_calls_used or 0) + 1
 
-        accumulate_usage(accumulated_usage, stream_data)
+        _fold_model_usage(motet, data, accumulated_usage, stream_data)
 
         _append_assistant_message(
             data.conversation_history,
@@ -1291,7 +1323,7 @@ def agentic_loop(data: AgenticLoopData) -> Dict[str, Any]:
     except CommandExecutionError as e:
         logger.error("agentic_loop_llm_failed", error_type=e.error_type, error_message=e.message)
         motet.stream_event("agentic_loop_error", phase="llm_inference", error=e.message, stream_key=data.stream_key)
-        return build_loop_result(
+        return _emit_loop_result(data,
             f"LLM inference failed: {e.message}", [], iterations_used, "error", accumulated_usage,
             media=accumulated_media,
         )
@@ -1326,7 +1358,7 @@ def agentic_loop(data: AgenticLoopData) -> Dict[str, Any]:
             reason=effective_finish_reason,
             stream_key=data.stream_key,
         )
-        return build_loop_result(
+        return _emit_loop_result(data,
             final_response or "Task completed.", [], iterations_used, effective_finish_reason, accumulated_usage,
             media=accumulated_media,
         )
@@ -1365,12 +1397,26 @@ def agentic_loop(data: AgenticLoopData) -> Dict[str, Any]:
     # ADR-0113: fold any artifact-backed media produced this iteration into the
     # accumulator so it survives to the terminal (text-only) return and recursion.
     _merge_tool_result_media(accumulated_media, exec_result.tool_results)
+    extend_tool_summaries(
+        data.tool_summaries,
+        exec_result.tool_results,
+        step=current_iteration,
+        tool_calls=filter_result.unique_tool_calls,
+    )
 
     if exec_result.auth_response is not None:
         if accumulated_media:
             exec_result.auth_response.setdefault("media", accumulated_media)
+        if data.tool_summaries:
+            exec_result.auth_response["tool_summaries"] = list(data.tool_summaries)
+        if data.spawn_children:
+            exec_result.auth_response["spawn_children"] = list(data.spawn_children)
         return exec_result.auth_response
     if exec_result.early_return is not None:
+        if data.tool_summaries:
+            exec_result.early_return["tool_summaries"] = list(data.tool_summaries)
+        if data.spawn_children:
+            exec_result.early_return["spawn_children"] = list(data.spawn_children)
         if exec_result.early_return.get("nested_workflow_suspend"):
             return _suspend_for_nested_workflow(
                 motet,
@@ -1398,6 +1444,10 @@ def agentic_loop(data: AgenticLoopData) -> Dict[str, Any]:
     if fast_path_result is not None:
         if accumulated_media:
             fast_path_result.setdefault("media", accumulated_media)
+        if data.tool_summaries:
+            fast_path_result["tool_summaries"] = list(data.tool_summaries)
+        if data.spawn_children:
+            fast_path_result["spawn_children"] = list(data.spawn_children)
         return fast_path_result
 
     # Step 6: Ask the in-process driver to run the next iteration

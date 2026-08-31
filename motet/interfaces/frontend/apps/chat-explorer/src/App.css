@@ -24,6 +24,31 @@ body {
   overflow: auto;
 }
 
+.rail-right-sider .reasoning-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.rail-right-sider .reasoning-thinking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.rail-right-sider .reasoning-panel-steps {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.rail-right-sider .reasoning-thinking-indicator .anticon {
+  font-size: 12px;
+  color: var(--ant-color-primary);
+}
+
 /* Conversation list stays inside the remaining viewport (below the 56px header)
    and scrolls inside the card. Conversations already uses overflow-y: auto;
    it only needs a bounded height. */
@@ -85,6 +110,11 @@ body {
 
 .conversation-list-card .ant-conversations-item-active .ant-conversations-label {
   color: var(--ant-color-text) !important;
+}
+
+.conversation-list-card .conversation-in-flight-icon {
+  font-size: 12px;
+  color: var(--ant-color-primary);
 }
 
 .conversation-list-card .conversation-title-text {
@@ -149,6 +179,11 @@ body {
 .input-model-row {
   margin-top: 8px;
   min-width: 0;
+  width: 100%;
+}
+
+.input-cost-totals {
+  margin-left: auto;
 }
 
 .input-model-select {
@@ -271,43 +306,93 @@ body {
   min-width: 0;
 }
 
-.assistant-turn-subagents {
-  max-height: 14.5rem;
-  overflow-y: auto;
-  padding: 2px;
+.assistant-turn-spawn-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assistant-turn-spawn-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--ant-color-border-secondary, rgba(127, 127, 127, 0.28));
   background: var(--ant-color-fill-tertiary, rgba(127, 127, 127, 0.08));
+  color: inherit;
 }
 
-.assistant-turn-subagents-collapse.ant-collapse {
+.assistant-turn-spawn-card-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
   background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
-.assistant-turn-subagents-collapse .ant-collapse-item {
-  border-bottom: 1px solid var(--ant-color-border-secondary, rgba(127, 127, 127, 0.18));
+.assistant-turn-spawn-card:hover {
+  border-color: var(--ant-color-primary, #1677ff);
 }
 
-.assistant-turn-subagents-collapse .ant-collapse-item:last-child {
-  border-bottom: none;
+.assistant-turn-spawn-card .assistant-turn-thinking {
+  margin-bottom: 4px;
 }
 
-.assistant-turn-subagents-collapse .ant-collapse-header {
-  padding-inline: 10px !important;
-  align-items: center !important;
-}
-
-.assistant-turn-subagents-collapse .ant-collapse-content-box {
-  padding-block: 0 8px !important;
-}
-
-.assistant-turn-subagent-label {
+.assistant-turn-spawn-card-title {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   font-weight: 600;
-  opacity: 0.9;
+}
+
+.assistant-turn-spawn-card-cost {
+  margin-left: auto;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.assistant-turn-speakers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assistant-turn-speaker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ant-color-border-secondary, rgba(127, 127, 127, 0.28));
+  background: var(--ant-color-fill-tertiary, rgba(127, 127, 127, 0.08));
+  color: inherit;
+}
+
+.assistant-turn-speaker-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.assistant-turn-speaker .assistant-turn-thinking {
+  margin-bottom: 0;
+}
+
+.assistant-turn-speaker-body {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .assistant-turn-thinking {

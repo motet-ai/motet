@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-28
 
 Description:
     Comprehensive tool command system for the Motet distributed framework.
@@ -823,6 +823,13 @@ def tool_execution(data: ToolExecutionData) -> Dict[str, Any]:
                 exec_result["artifact_id"] = artifact_id
             else:
                 exec_result = {"result": exec_result, "artifact_id": artifact_id}
+
+        if execution_duration_ms is not None:
+            if isinstance(exec_result, dict):
+                exec_result = dict(exec_result)
+                exec_result["duration_ms"] = execution_duration_ms
+            else:
+                exec_result = {"result": exec_result, "duration_ms": execution_duration_ms}
 
         return exec_result
 

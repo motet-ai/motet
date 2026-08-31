@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-28
+Last Modified: 2026-08-29
 
 Description:
     In-process loop state for the `agentic_loop` executor. A single Pydantic
@@ -310,6 +310,32 @@ class AgenticLoopData(MessageFieldMixin, BaseCommandData):
             "Artifact-backed media parts (serialized MediaPart dicts with artifact_id) "
             "accumulated across agentic_loop iterations. De-duplicated by "
             "artifact_id; surfaced on the terminal loop result as top-level 'media'."
+        ),
+    )
+    thinking_parts: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Provider reasoning summaries accumulated this loop for display persist. "
+            "Carried across iterations on the loop snapshot. Joined onto the "
+            "terminal result as thinking_text. Not assistant content and not "
+            "replayed into the next user turn."
+        ),
+    )
+    tool_summaries: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Short tool name/status/preview rows accumulated this loop for "
+            "conversation reload. Carried across iterations on the loop snapshot. "
+            "Optional step is the loop iteration so chat reload can rebuild "
+            "Step N. Not tool-call / tool-result replay items."
+        ),
+    )
+    spawn_children: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Card pointers to isolated spawn conversations created this loop. "
+            "Accumulated across fan-outs on the loop snapshot and written on "
+            "the parent transcript row. Omitted from next-turn model replay."
         ),
     )
 

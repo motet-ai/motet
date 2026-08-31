@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-30
  *
  * Description:
  *     Pure utility functions for resolving agent display names from qualified

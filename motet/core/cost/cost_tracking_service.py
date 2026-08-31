@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Centralized cost tracking using canonical protocol.
@@ -14,8 +14,8 @@ Description:
     maintains aggregations for cost reporting. Per-conversation running
     totals are incremented at write time (O(1) exact reads regardless of
     tenant event volume) and power cycle reporting (e.g. app-builder
-    GitHub comments); workflow ``isolate_conversation`` child IDs
-    (``{parent}__suffix``) are indexed under the parent for rollups.
+    GitHub comments); isolated child conversation IDs are indexed under
+    the stored root for rollups.
 
     Implements §5.C (CostTrackingService) with:
     - Cost event streaming to Redis
@@ -116,6 +116,7 @@ class CostTrackingService:
         command_id: Optional[str] = None,
         task_id: Optional[str] = None,
         principal_id: Optional[str] = None,
+        root_conversation_id: Optional[str] = None,
     ) -> float:
         """
         Track model usage cost from canonical LLMUsage.
@@ -177,6 +178,7 @@ class CostTrackingService:
                 principal_id=principal_id,
                 cost_usd=cost_usd,
                 full_cost_usd=full_cost_usd,
+                root_conversation_id=root_conversation_id,
             )
             
             # Write to Redis stream
@@ -245,6 +247,7 @@ class CostTrackingService:
         principal_id: Optional[str],
         cost_usd: float,
         full_cost_usd: float,
+        root_conversation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build event data dictionary for Redis stream."""
         return {
@@ -252,6 +255,7 @@ class CostTrackingService:
             "tenant_id": tenant_id,
             "principal_id": principal_id or "",
             "conversation_id": conversation_id or "",
+            "root_conversation_id": (root_conversation_id or "").strip(),
             "command_id": command_id or "",
             "task_id": task_id or "",
             
@@ -357,8 +361,8 @@ class CostTrackingService:
         - ``cost:conversation:{tenant}:{cid}`` hash — cost_usd, full_cost_usd,
           prompt_tokens, output_tokens, total_tokens, event_count
         - ``…:{cid}:models`` / ``…:{cid}:providers`` sets
-        - ``…:{root}:children`` set — child cids indexed under the parent when
-          cid is a workflow ``isolate_conversation`` child (``{parent}__suffix``)
+        - ``…:{root}:children`` set — child cids indexed under the root when
+          the event (or parentage record) has ``root_conversation_id``
 
         Non-critical path: failures are logged, never raised.
         """
@@ -388,13 +392,12 @@ class CostTrackingService:
                 pipe.sadd(f"{base}:providers", provider)
                 pipe.expire(f"{base}:providers", ttl)
 
-            # Index isolate_conversation children under the root parent so
-            # get_conversation_cost_summary(include_children=True) is exact.
-            # Parentage convention is owned by conversations.lineage.
-            from ..conversations.lineage import root_conversation_id_of
+            root = str(event.get("root_conversation_id") or "").strip()
+            if not root:
+                from ..conversations.lineage import root_conversation_id_of
 
-            root = root_conversation_id_of(cid)
-            if root:
+                root = root_conversation_id_of(cid, tenant_id=tenant_id) or ""
+            if root and root != cid:
                 children_key = write_key(
                     redis,
                     tenant_id,
@@ -597,8 +600,8 @@ class CostTrackingService:
         Totals are incremented at event-write time by
         ``_update_conversation_totals``, so results are exact regardless of
         tenant event volume. When ``include_children`` is True, also sums the
-        workflow ``isolate_conversation`` child IDs (``{parent}__suffix``)
-        indexed under this conversation's ``:children`` set.
+        isolated child conversation IDs indexed under this conversation's
+        ``:children`` set.
         """
         cid = (conversation_id or "").strip()
         empty: Dict[str, Any] = {

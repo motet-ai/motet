@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-29
 
 Description:
     Chat API for the Motet distributed framework.
@@ -35,7 +35,9 @@ Notes:
     - Part of Phase 2: API Organization and URL Standardization
     - Streaming (SSE and WebSocket): event JSON may include optional ``agent_id`` (qualified
       registry id for the turn, e.g. ``core.default``) on tokens, lifecycle, tool/reasoning,
-      thinking, and error frames. Nested loops also carry ``parent_agent_id``.
+      thinking, usage, and error frames. Nested loops also carry ``parent_agent_id``.
+    - ``usage`` is the running loop token envelope after each model call, with
+      top-level ``cost_usd`` when priced (unknown if absent).
     - Inbound messages may include optional per-message ``agent_id`` so Motet-aware
       clients can round-trip transcript provenance into prepare_context merge (issue #138)
 """
@@ -127,6 +129,15 @@ def _sse_orchestrator_line(ev: Dict[str, Any], sse_event: str) -> bytes:
         return _sse_line(sse_event, _orchestrator_data_with_agent_id(ev))
     except Exception:
         return _sse_line(sse_event, {})
+
+
+def _flat_stream_event_body(ev: Dict[str, Any]) -> Dict[str, Any]:
+    """Top-level stream fields minus event/agent keys (thinking, usage, lifecycle)."""
+    return {
+        key: value
+        for key, value in ev.items()
+        if key not in {"event", "agent_id", "parent_agent_id"}
+    }
 
 
 def _sse_stream_body_line(ev: Dict[str, Any], sse_event: str, body: Dict[str, Any]) -> bytes:
@@ -675,12 +686,7 @@ async def chat(
                         elif ev.get("event") in _ORCHESTRATOR_DATA_EVENTS:
                             yield _sse_orchestrator_line(ev, ev["event"])
                         elif ev.get("event") in _ORCHESTRATOR_LIFECYCLE_EVENTS:
-                            lifecycle_body = {
-                                k: v
-                                for k, v in ev.items()
-                                if k not in {"event", "agent_id", "parent_agent_id"}
-                            }
-                            yield _sse_stream_body_line(ev, ev["event"], lifecycle_body)
+                            yield _sse_stream_body_line(ev, ev["event"], _flat_stream_event_body(ev))
                         elif ev.get("event") == "thinking":
                             # ADR-0064: Model reasoning/thinking traces (o1/o3, Claude extended thinking, etc.)
                             yield _sse_stream_body_line(
@@ -688,6 +694,8 @@ async def chat(
                                 "thinking",
                                 {"text": ev.get("text", ""), "is_complete": ev.get("is_complete", False)},
                             )
+                        elif ev.get("event") == "usage":
+                            yield _sse_stream_body_line(ev, "usage", _flat_stream_event_body(ev))
                         elif ev.get("event") == "auth_required":
                             # ADR-0057: OAuth authorization required for MCP service
                             try:
@@ -982,15 +990,10 @@ async def ws_chat(ws: WebSocket):
                     elif ev_name in _ORCHESTRATOR_DATA_EVENTS:
                         await _ws_send_orchestrator_event(ws, ev, ev["event"])
                     elif ev_name in _ORCHESTRATOR_LIFECYCLE_EVENTS:
-                        lifecycle_payload = {
-                            k: v
-                            for k, v in ev.items()
-                            if k not in {"event", "agent_id", "parent_agent_id"}
-                        }
                         await _ws_send_with_agent(
                             ws,
                             ev,
-                            {"event": ev_name, "data": lifecycle_payload},
+                            {"event": ev_name, "data": _flat_stream_event_body(ev)},
                         )
                     elif ev_name == "thinking":
                         await _ws_send_with_agent(
@@ -1000,6 +1003,12 @@ async def ws_chat(ws: WebSocket):
                                 "event": "thinking",
                                 "data": {"text": ev.get("text", ""), "is_complete": ev.get("is_complete", False)},
                             },
+                        )
+                    elif ev_name == "usage":
+                        await _ws_send_with_agent(
+                            ws,
+                            ev,
+                            {"event": "usage", "data": _flat_stream_event_body(ev)},
                         )
             elif stream:
                 # Orchestrator is mandatory for streaming

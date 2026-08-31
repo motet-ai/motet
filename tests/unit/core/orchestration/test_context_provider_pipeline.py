@@ -5,13 +5,13 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-07-30
+Last Modified: 2026-08-31
 
 Description:
-    Unit tests for the ADR-0109 context preparation provider pipeline. These
+    Unit tests for the context preparation provider pipeline. These
     tests validate provider ordering, memory item serialization behavior,
-    and the no-double-fetch invariant (#132) outside the distributed
-    prepare_context command wrapper.
+    the no-double-fetch invariant, and skipping memory recall when the
+    turn has no user query.
 
 Dependencies:
     - dataclasses for lightweight test doubles
@@ -99,6 +99,7 @@ class _CountingMemoryStub:
         self.hybrid_retrieve_call_count = 0
         self.apply_vector_recall_call_count = 0
         self.apply_vector_recall_got_memory_items = False
+        self.recall_call_count = 0
 
     def hybrid_retrieve(self, **kwargs: Any) -> list[Any]:
         self.hybrid_retrieve_call_count += 1
@@ -110,6 +111,7 @@ class _CountingMemoryStub:
         return kwargs.get("messages", [])
 
     def recall(self, **kwargs: Any) -> list[Any]:
+        self.recall_call_count += 1
         return []
 
 
@@ -146,6 +148,50 @@ def test_memory_provider_does_not_double_fetch() -> None:
         "apply_vector_recall should receive pre-retrieved memory_items= kwarg "
         "so it skips its internal hybrid_retrieve call (#132)."
     )
+
+
+def test_memory_provider_skips_recall_without_user_text() -> None:
+    counting_memory = _CountingMemoryStub()
+
+    @dataclass
+    class _MotetWithCountingMemory:
+        memory: Any = counting_memory
+        conversation_id: str = "conv-1"
+
+    out = MemoryRecallProvider().apply(
+        ContextPipelineState(
+            messages=[Message(role="system", content="Analyze the following topic: healthy foods")]
+        ),
+        data=_PrepareData(),
+        motet=_MotetWithCountingMemory(),
+        logger=_LoggerStub(),
+    )
+
+    assert counting_memory.hybrid_retrieve_call_count == 0
+    assert counting_memory.recall_call_count == 0
+    assert counting_memory.apply_vector_recall_call_count == 0
+    assert out.context_info["memory_recall_skipped"] == "empty_query"
+    assert out.context_info["memory_items"] == []
+
+
+def test_memory_provider_skips_recall_for_blank_user_text() -> None:
+    counting_memory = _CountingMemoryStub()
+
+    @dataclass
+    class _MotetWithCountingMemory:
+        memory: Any = counting_memory
+        conversation_id: str = "conv-1"
+
+    out = MemoryRecallProvider().apply(
+        ContextPipelineState(messages=[Message(role="user", content="   ")]),
+        data=_PrepareData(),
+        motet=_MotetWithCountingMemory(),
+        logger=_LoggerStub(),
+    )
+
+    assert counting_memory.hybrid_retrieve_call_count == 0
+    assert counting_memory.recall_call_count == 0
+    assert out.context_info["memory_recall_skipped"] == "empty_query"
 
 
 def test_token_budget_provider_prunes_oldest_images_to_renderer_limit() -> None:

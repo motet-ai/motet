@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-30
 
 Description:
     Complete-phase helpers for `agent_turn` (GitHub issue #147 factorization).
@@ -23,6 +23,9 @@ Usage:
     from motet.core.orchestration.turn.complete import (
         complete_agent_turn,
         extract_response_text,
+        extract_thinking_text,
+        extract_tool_summaries,
+        extract_spawn_children,
         extract_turn_usage,
         _collect_generated_media,
     )
@@ -228,6 +231,80 @@ def extract_response_text(payload: Any) -> str:
     return ""
 
 
+def extract_thinking_text(payload: Any) -> Optional[str]:
+    """Display-only reasoning from a loop or no_tools payload, or None."""
+    if not isinstance(payload, dict):
+        return None
+    candidates: List[Any] = [payload]
+    for nested_key in ("data", "result"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for candidate in candidates:
+        for key in ("thinking_text", "reasoning_content"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def extract_tool_summaries(payload: Any) -> Optional[List[Dict[str, Any]]]:
+    """Display-only tool name/status/preview rows from a loop payload, or None."""
+    if not isinstance(payload, dict):
+        return None
+    candidates: List[Any] = [payload]
+    for nested_key in ("data", "result"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for candidate in candidates:
+        raw = candidate.get("tool_summaries")
+        if not isinstance(raw, list) or not raw:
+            continue
+        rows = [row for row in raw if isinstance(row, dict) and row.get("tool_name")]
+        if rows:
+            return rows
+    return None
+
+
+def extract_spawn_children(payload: Any) -> Optional[List[Dict[str, Any]]]:
+    """Display-only spawn card pointers from a loop or tool payload, or None.
+
+    Early mint pointers and completed fan-in rows share
+    ``child_conversation_id``. Filled fields from later candidates overlay
+    earlier ones so thinking, tool summaries, and cost survive finalize.
+    """
+    if not isinstance(payload, dict):
+        return None
+    from motet.core.conversations.transcript_storage import (
+        coerce_spawn_children,
+        overlay_spawn_child_pointer,
+    )
+
+    candidates: List[Any] = [payload]
+    for nested_key in ("data", "result", "meta"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+            inner = nested.get("meta") if nested_key != "meta" else None
+            if isinstance(inner, dict):
+                candidates.append(inner)
+    by_cid: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for candidate in candidates:
+        rows = coerce_spawn_children(candidate.get("spawn_children"))
+        for row in rows:
+            child_cid = str(row.get("child_conversation_id") or "").strip()
+            if not child_cid:
+                continue
+            if child_cid not in by_cid:
+                order.append(child_cid)
+                by_cid[child_cid] = dict(row)
+                continue
+            by_cid[child_cid] = overlay_spawn_child_pointer(by_cid[child_cid], row)
+    return [by_cid[child_cid] for child_cid in order] or None
+
+
 def extract_turn_usage(payload: Any) -> Optional[Dict[str, int]]:
     """Pull aggregated token usage from the agent loop or a no-tools reply.
 
@@ -296,7 +373,7 @@ def extract_turn_cost(payload: Any) -> Optional[float]:
     if not isinstance(payload, dict):
         return None
 
-    for candidate in (payload, payload.get("data")):
+    for candidate in (payload, payload.get("data"), payload.get("result")):
         if not isinstance(candidate, dict):
             continue
         cost = candidate.get("cost_usd")
@@ -368,6 +445,9 @@ def complete_agent_turn(
     }
     if turn_usage is not None:
         terminal_fields["usage"] = turn_usage
+    turn_cost = extract_turn_cost(turn_result)
+    if turn_cost is not None:
+        terminal_fields["cost_usd"] = turn_cost
     turn_stop_reason = None
     if isinstance(turn_result, dict):
         turn_stop_reason = turn_result.get("stop_reason")
@@ -402,6 +482,8 @@ def complete_agent_turn(
         "artifact_rag_citations": prepared_context_info.get("artifact_rag_citations", []),
         "usage": turn_usage,
     }
+    if turn_cost is not None:
+        response["cost_usd"] = turn_cost
     # Callers outside orchestration (OpenAI facade) branch on stop_reason, so it
     # must survive the loop result -> turn response hop, not just the stream event.
     if turn_stop_reason:
@@ -411,6 +493,9 @@ def complete_agent_turn(
 
 __all__ = [
     "extract_response_text",
+    "extract_thinking_text",
+    "extract_tool_summaries",
+    "extract_spawn_children",
     "extract_turn_cost",
     "extract_turn_usage",
     "resolve_turn_model",

@@ -4,7 +4,7 @@
 
 ## Overview
 
-- **What they are**: A registry of conversation metadata per (motet, tenant, principal). Each entry has an id, display title, timestamps, and optional agent/surface scope. Conversation **history** (messages) and **memory/vector** are stored separately and can be cleared per conversation.
+- **What they are**: A registry of conversation metadata per (motet, tenant, principal). Each entry has an id, display title, timestamps, optional agent/surface scope, and `parent_conversation_id` (null for root chats). Conversation **history** (messages) and **memory/vector** are stored separately and can be cleared per conversation.
 - **Where they live**: Backed by the conversation registry (Redis); list/get/clear/register/rename are exposed as distributed commands and as the **Conversations API** (HTTP) for clients.
 - **Relationship to chat**: Starting a chat with a new conversation ID implicitly creates that conversation (register/touch). The Chat API sends messages and streams responses; the Conversations API manages the session list and lifecycle.
 
@@ -12,11 +12,11 @@
 
 | Operation | Description |
 |-----------|-------------|
-| **List** | List conversations for the current principal in the tenant, optionally filtered by agent or surface. Returns id, title, created_at, updated_at, agent_id?, surface_id? sorted by updated_at descending. |
-| **Get** | Get one conversation: replay history from conversation-scoped memory plus memory/vector counts. History items can include artifact references for multimodal display. |
+| **List** | List conversations for the current principal in the tenant, optionally filtered by agent or surface. Returns id, title, created_at, updated_at, agent_id?, surface_id?, turn_agent_id?, and `parent_conversation_id` (null for root chats) sorted by updated_at descending. Spawn-child chats stay listed under the parent chat agent, set `turn_agent_id` to `core.subagent`, and set `parent_conversation_id` to the parent chat. |
+| **Get** | Get one conversation: replay history from conversation-scoped memory plus memory/vector counts. History items can include artifact references for multimodal display, `thinking_text` when provider reasoning was stored, `tool_summaries` (name, status, preview) when tools ran, `cost_usd` when that agent loop recorded a priced estimate, and `spawn_children` when that turn created isolated spawn conversations. Each spawn card includes that child's thinking, tool summaries, and cost when those were stored on the child conversation. The conversation may include `cost_usd` for the priced conversation rollup, `turn_agent_id` when follow-up should use a different agent than the list scope, and `parent_conversation_id` (null for root chats). |
 | **Register (touch)** | Ensure a conversation exists in the registry; create or update updated_at. Optional title, agent_id, surface_id (set on create). |
 | **Rename** | Update a conversation’s display title. |
-| **Clear** | Remove the conversation from the registry and clear conversation-scoped memory and vector data. |
+| **Clear** | Remove the conversation from the registry and clear conversation-scoped memory and vector data. Isolated descendants (spawn-child chats and `isolate_conversation` steps) are cleared too. Deleting a child does not delete its parent. |
 
 New conversations are created implicitly when a client starts a chat with a new conversation ID (the chat path registers or touches the conversation). There is no separate “create conversation” endpoint; use register when you need to ensure a session exists from code.
 
@@ -26,7 +26,7 @@ From inside another command, the preferred way to list, get, clear, register, or
 
 - **`motet.conversations.list(limit=100, agent_id=None, surface_id=None)`** – List conversations for the current principal. When you have task context, delegates to the list command; otherwise uses an inner path with motet’s tenant/principal.
 - **`motet.conversations.get(conversation_id)`** – Get one conversation (history + counts). Requires task context; delegates to the get command.
-- **`motet.conversations.clear(conversation_id)`** – Clear the conversation (registry + memory/vector). Requires task context; delegates to the clear command.
+- **`motet.conversations.clear(conversation_id)`** – Clear the conversation (registry + memory/vector) and its isolated descendants. Requires task context; delegates to the clear command.
 - **`motet.conversations.register(conversation_id, title=None, agent_id=None, surface_id=None)`** – Register or touch a conversation. Requires task context; delegates to the register command.
 - **`motet.conversations.rename(conversation_id, title)`** – Rename a conversation. Requires task context; delegates to the rename command.
 
@@ -94,4 +94,4 @@ Common surface ids include `demo_chat` (Chat Explorer default channel), `openai_
 
 ---
 
-**Last Updated**: 2026-08-04
+**Last Updated**: 2026-08-28

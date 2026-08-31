@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Single conversion surface between AgenticLoopData, in-process continuations, and TurnCheckpoint loop-state fields (issue #147).
@@ -53,6 +53,8 @@ Notes:
       this codec still speaks the flat in-process field list.
     - ``with_fresh_budget()`` is the issue #188 Continue policy; handback resume
       must keep ``remaining_iterations`` / ``model_calls_used`` instead.
+      Fresh budget clears ``thinking_parts`` so a new Continue turn does not
+      persist the prior turn's reasoning as this turn's display thinking.
 """
 
 from __future__ import annotations
@@ -94,6 +96,9 @@ _LOOP_STATE_FIELDS = (
     "enable_prompt_caching",
     "usage_accumulator",
     "media_accumulator",
+    "thinking_parts",
+    "tool_summaries",
+    "spawn_children",
     "skill_refs",
     "handback_tool_names",
     "handback_tools",
@@ -148,6 +153,9 @@ class LoopStateSnapshot(BaseModel):
     # Token counters are ints, the ADR-0018 cost_usd running total is a float.
     usage_accumulator: Optional[Dict[str, Any]] = None
     media_accumulator: List[Dict[str, Any]] = Field(default_factory=list)
+    thinking_parts: List[str] = Field(default_factory=list)
+    tool_summaries: List[Dict[str, Any]] = Field(default_factory=list)
+    spawn_children: List[Dict[str, Any]] = Field(default_factory=list)
     skill_refs: Optional[List[Union[SkillRef, Dict[str, Any]]]] = None
     handback_tool_names: Optional[List[str]] = None
     handback_tools: Optional[List[Union[Dict[str, Any], CanonicalToolSchema]]] = None
@@ -258,6 +266,9 @@ class LoopStateSnapshot(BaseModel):
                 dict(self.usage_accumulator) if self.usage_accumulator else None
             ),
             "media_accumulator": list(self.media_accumulator or []),
+            "thinking_parts": list(self.thinking_parts or []),
+            "tool_summaries": [dict(row) for row in (self.tool_summaries or [])],
+            "spawn_children": [dict(row) for row in (self.spawn_children or [])],
             "skill_refs": _serialize_optional_items(self.skill_refs),
             # Always a list on the checkpoint (matches prior suspend field copy).
             "handback_tool_names": list(self.handback_tool_names or []),
@@ -297,6 +308,9 @@ class LoopStateSnapshot(BaseModel):
                 "model_calls_used": 0,
                 "stalled_iterations": 0,
                 "usage_accumulator": None,
+                "thinking_parts": [],
+                "tool_summaries": [],
+                "spawn_children": [],
             }
         )
 

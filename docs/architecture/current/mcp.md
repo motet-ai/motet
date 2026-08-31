@@ -6,12 +6,12 @@ Worker restart does not recycle MCP servers. One server failing must not take ev
 
 ```mermaid
 sequenceDiagram
-    participant Loop as Agent loop
+    participant AgentTurn as Agent turn
     participant Worker
     participant Mgr as MCP manager
     participant Server as MCP server
 
-    Loop->>Worker: core.tool_execution
+    AgentTurn->>Worker: core.tool_execution
     Worker->>Mgr: scoped Redis stream
     Mgr->>Server: stdio or HTTP
     Server-->>Mgr: MCP response

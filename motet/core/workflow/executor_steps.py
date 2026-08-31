@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-13
+Last Modified: 2026-08-29
 
 Description:
     Step and level execution for WorkflowExecutor: parallel/sequential levels,
@@ -14,7 +14,7 @@ Description:
 
 Dependencies:
     - motet.core.workers.concurrency_primitives: WorkerExecutor, worker_sleep
-    - motet.core.conversations.lineage: child conversation_id minting
+    - motet.core.conversations.lineage: isolated conversation minting
     - motet.core.workflow.utils: substitute_parameters
     - structlog via self.logger on WorkflowExecutor
 
@@ -36,12 +36,21 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
-from ..conversations.lineage import make_child_conversation_id
+from ..conversations.lineage import IsolatedConversation, mint_isolated_conversation
 from ..workers.concurrency_primitives import worker_sleep
 from .utils import substitute_parameters
 
 if TYPE_CHECKING:
     import structlog
+
+
+def _root_hint(motet: Any) -> Optional[str]:
+    """Root conversation id from turn metadata, or None when unset."""
+    meta = getattr(motet, "metadata", None)
+    if not isinstance(meta, dict):
+        return None
+    root = str(meta.get("root_conversation_id") or "").strip()
+    return root or None
 
 
 class WorkflowStepsMixin:
@@ -254,11 +263,16 @@ class WorkflowStepsMixin:
                 iter_step_id = f"{step.step_id}[{i}]"
                 iter_conversation_id: Optional[str] = None
                 if getattr(step, "isolate_conversation", False):
-                    iter_conversation_id = make_child_conversation_id(
+                    iso = mint_isolated_conversation(
                         parent_cid,
-                        suffix=f"{step.step_id}_chunk_{i}",
+                        tenant_id=getattr(motet, "tenant_id", None),
+                        kind="workflow_isolate",
+                        root_conversation_id=_root_hint(motet),
                     )
-                    overlay["isolated_conversation_id"] = iter_conversation_id
+                    iter_conversation_id = iso.conversation_id
+                    overlay["isolated_conversation_id"] = iso.conversation_id
+                    overlay["parent_conversation_id"] = iso.parent_conversation_id
+                    overlay["root_conversation_id"] = iso.root_conversation_id
                 self.logger.info(
                     "foreach_iteration_start",
                     step_id=step.step_id,
@@ -433,15 +447,19 @@ class WorkflowStepsMixin:
 
         # Non-foreach steps may also request isolation (e.g. soft reviewer).
         effective_conversation_id = conversation_id
+        isolated: Optional[IsolatedConversation] = None
         if (
             effective_conversation_id is None
             and getattr(step, "isolate_conversation", False)
             and not getattr(step, "foreach", None)
         ):
-            effective_conversation_id = make_child_conversation_id(
+            isolated = mint_isolated_conversation(
                 getattr(motet, "conversation_id", None),
-                suffix=step.step_id,
+                tenant_id=getattr(motet, "tenant_id", None),
+                kind="workflow_isolate",
+                root_conversation_id=_root_hint(motet),
             )
+            effective_conversation_id = isolated.conversation_id
 
         self._emit_workflow_step_event(
             motet=motet,
@@ -503,23 +521,23 @@ class WorkflowStepsMixin:
                 merged_meta["configured_agent_qualified_id"] = aid
         if _primary and not merged_meta.get("conversation_primary_agent_id"):
             merged_meta["conversation_primary_agent_id"] = _primary
-        if effective_conversation_id:
-            merged_meta["parent_conversation_id"] = getattr(motet, "conversation_id", None)
+        if isolated is not None:
+            merged_meta["parent_conversation_id"] = isolated.parent_conversation_id
+            merged_meta["root_conversation_id"] = isolated.root_conversation_id
+            merged_meta["isolated_conversation"] = True
+        elif effective_conversation_id:
+            if context.get("root_conversation_id"):
+                merged_meta["parent_conversation_id"] = context.get("parent_conversation_id")
+                merged_meta["root_conversation_id"] = context.get("root_conversation_id")
+            else:
+                merged_meta.setdefault(
+                    "parent_conversation_id", getattr(motet, "conversation_id", None)
+                )
             merged_meta["isolated_conversation"] = True
         execution_kwargs = {**execution_kwargs, "metadata": merged_meta}
         if effective_conversation_id:
             # motet.do merges kwargs after parent conversation_id → override wins.
             execution_kwargs["conversation_id"] = effective_conversation_id
-            # Index the child under its root parent so admin/observability can
-            # discover the whole cycle (best-effort; never fails the step).
-            from ..conversations.lineage import record_conversation_lineage_sync
-
-            tenant_id = getattr(motet, "tenant_id", None)
-            if isinstance(tenant_id, str) and tenant_id.strip():
-                record_conversation_lineage_sync(
-                    tenant_id=tenant_id,
-                    child_conversation_id=effective_conversation_id,
-                )
 
         cmd = (step.command_type or "").strip()
         if cmd in (

@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint --ext .ts,.tsx src",
-    "test": "npx --yes tsx --test src/hooks/conversationHistoryApply.test.ts"
+    "test": "npx --yes tsx --test src/hooks/conversationHistoryApply.test.ts src/hooks/useChatProcessing.test.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^5.4.0",

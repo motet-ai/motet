@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-29
 
 Description:
     Turn-hook helpers for `agent_turn`. Owns pre-reasoning hooks
@@ -527,6 +527,10 @@ def persist_history_only(
     finalize_root_agent_id: str,
     reserve_sequence: int,
     pending_action_carry: Any,
+    thinking_text: Optional[str] = None,
+    tool_summaries: Optional[List[Any]] = None,
+    cost_usd: Optional[float] = None,
+    spawn_children: Optional[List[Any]] = None,
 ) -> None:
     """Store the exchange for an outcome that will never reach finalize.
 
@@ -547,6 +551,10 @@ def persist_history_only(
         root_agent_id=finalize_root_agent_id,
         transcript_sequence=reserve_sequence,
         pending_action_carry=pending_action_carry,
+        thinking_text=thinking_text,
+        tool_summaries=tool_summaries,
+        cost_usd=cost_usd,
+        spawn_children=spawn_children,
     )
     try:
         persist_data = (
@@ -583,6 +591,10 @@ def run_finalize_hook(
     finalize_root_agent_id: str,
     reserve_sequence: int,
     pending_action_carry: Any,
+    thinking_text: Optional[str] = None,
+    tool_summaries: Optional[List[Any]] = None,
+    cost_usd: Optional[float] = None,
+    spawn_children: Optional[List[Any]] = None,
 ) -> None:
     """COMPLETING-phase finalize hook (store conversation + update memory)."""
     fin_hook = getattr(turn_hooks, "finalize", None) if turn_hooks else None
@@ -599,6 +611,10 @@ def run_finalize_hook(
         root_agent_id=finalize_root_agent_id,
         transcript_sequence=reserve_sequence,
         pending_action_carry=pending_action_carry,
+        thinking_text=thinking_text,
+        tool_summaries=tool_summaries,
+        cost_usd=cost_usd,
+        spawn_children=spawn_children,
     )
     try:
         finalize_data = (

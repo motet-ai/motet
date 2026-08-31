@@ -5,12 +5,13 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-18
+Last Modified: 2026-08-31
 
 Description:
     Unit tests for ADR-0083 conversation registry scoping behavior. Verifies
-    agent/surface strict filtering semantics and immutability of
-    conversation scope metadata on touch operations.
+    agent/surface strict filtering semantics, immutability of conversation
+    scope metadata on touch operations, and the durable parent-pointer
+    descendant walk used by conversation delete cascade.
 
 Dependencies:
     - pytest: test framework
@@ -313,3 +314,95 @@ def test_registry_key_rejects_empty_identity_fields() -> None:
         registry._registry_key("", "t1", "p1")
     key = registry._registry_key("f1", "t1", "p1")
     assert key == "t1:conv:f1:p1"
+
+
+def test_register_stores_turn_agent_and_get_returns_row(
+    fake_registry_store: Dict[str, Dict[str, Any]],
+) -> None:
+    registry.register_or_touch_conversation_sync(
+        motet_id="f1",
+        tenant_id="t1",
+        principal_id="p1",
+        conversation_id="iso-1",
+        title="research",
+        agent_id="core.default",
+        surface_id="demo_chat",
+        turn_agent_id="core.subagent",
+        spawn_contract={"discover": False, "tools": ["core.web_search"]},
+    )
+    row = registry.get_conversation_sync("f1", "t1", "p1", "iso-1")
+    assert row is not None
+    assert row["agent_id"] == "core.default"
+    assert row["turn_agent_id"] == "core.subagent"
+    assert row["spawn_contract"]["tools"] == ["core.web_search"]
+
+    registry.register_or_touch_conversation_sync(
+        motet_id="f1",
+        tenant_id="t1",
+        principal_id="p1",
+        conversation_id="iso-1",
+        title="research updated",
+        agent_id="core.default",
+        turn_agent_id="core.default",
+        spawn_contract={"discover": True},
+    )
+    again = registry.get_conversation_sync("f1", "t1", "p1", "iso-1")
+    assert again is not None
+    assert again["title"] == "research updated"
+    assert again["turn_agent_id"] == "core.subagent"
+    assert again["spawn_contract"]["discover"] is False
+
+
+def _register_child(
+    conversation_id: str,
+    parent_conversation_id: str | None,
+) -> None:
+    registry.register_or_touch_conversation_sync(
+        motet_id="f1",
+        tenant_id="t1",
+        principal_id="p1",
+        conversation_id=conversation_id,
+        title=conversation_id,
+        agent_id="core.default",
+        surface_id="demo_chat",
+        parent_conversation_id=parent_conversation_id,
+    )
+
+
+def test_registry_descendants_walk_parent_pointers(
+    fake_registry_store: Dict[str, Dict[str, Any]],
+) -> None:
+    """Durable parent_conversation_id rows yield direct and nested children."""
+    _register_child("parent", None)
+    _register_child("iso-a", "parent")
+    _register_child("iso-b", "parent")
+    _register_child("iso-nested", "iso-a")
+    _register_child("unrelated", None)
+
+    found = registry.list_descendant_conversations_from_registry_sync(
+        "f1", "t1", "p1", "parent"
+    )
+    assert found == ["iso-a", "iso-b", "iso-nested"]
+
+    # A child only lists its own subtree; a leaf lists nothing.
+    assert registry.list_descendant_conversations_from_registry_sync(
+        "f1", "t1", "p1", "iso-a"
+    ) == ["iso-nested"]
+    assert (
+        registry.list_descendant_conversations_from_registry_sync(
+            "f1", "t1", "p1", "iso-b"
+        )
+        == []
+    )
+
+
+def test_registry_descendants_tolerate_parent_pointer_cycles(
+    fake_registry_store: Dict[str, Dict[str, Any]],
+) -> None:
+    """A corrupt cycle terminates and returns each id once."""
+    _register_child("a", "b")
+    _register_child("b", "a")
+
+    assert registry.list_descendant_conversations_from_registry_sync(
+        "f1", "t1", "p1", "a"
+    ) == ["b"]

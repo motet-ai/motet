@@ -12,7 +12,7 @@ Given a topic (e.g., "remote work", "AI regulation"), three specialist agents ea
 | `expert-panel.skeptic` | Identifies risks, challenges, and failure modes | Response stored automatically via `finalize_turn` with agent identity |
 | `expert-panel.synthesizer` | Produces a balanced, actionable assessment | Recalls prior panels via `recall_discussion` tool, response stored with agent identity |
 
-The workflow runs the optimist and skeptic as **parallel agent turns**, then feeds both responses into the synthesizer agent. A full run takes roughly a minute. Each `core.agent_turn` pins `openai` / `gpt-5.6-luna` and `enable_thinking: true` on `context` so the panel uses a thinking-capable model even when the chat turn is on something else. Pass `provider` and `model_name` to change the pin.
+The workflow runs the optimist and skeptic as **parallel agent turns**, then feeds both responses into the synthesizer agent. A full run takes roughly a minute. Each `core.agent_turn` pins `openai` / `o3-mini` and `enable_thinking: true` on `context` so the panel uses a thinking-capable model even when the chat turn is on something else. Pass `provider` and `model_name` to change the pin.
 
 ## Quick Start
 
@@ -72,7 +72,7 @@ Each workflow step invokes `core.agent_turn`, which gives every agent the full l
 
 1. **System prompt** applied from `agents.yaml` (persona, instructions)
 2. **`memory_reset`** clears working memory for a clean turn
-3. **`prepare_context`** recalls relevant memories from prior conversations
+3. **`prepare_context`** recalls relevant memories when the turn has a user query; each panel step puts the topic (and the two analyses, for the synthesizer) on a user message so analysis and recall have text to work with
 4. **LLM inference** with tool access (the synthesizer can use `recall_discussion`)
 5. **`finalize_turn`** stores the response in memory, scoped to the agent's identity
 

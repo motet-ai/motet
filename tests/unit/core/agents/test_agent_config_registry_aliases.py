@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-05
+Last Modified: 2026-08-31
 
 Description:
     Unit tests for agent bare-alias opt-in behavior (issue #186). Bare agent_id is
@@ -150,3 +150,17 @@ class TestBuiltinShortNames:
         assert registry.resolve_id("motet_admin") == "core.motet_admin"
         assert registry.get("core.default") is not None
         assert registry.get("core.motet_admin") is not None
+        sub = registry.get("core.subagent")
+        assert sub is not None
+        assert sub.selectable is False
+        assert "core.spawn_agents" in (sub.tool_filter.exclude_tools or [])
+        assert sub.turn_hooks.conversation_analysis is None
+        assert sub.turn_hooks.context_prepare == "core.prepare_context"
+        assert f"{sub.max_iterations} tool rounds" in sub.system_prompt
+        assert f"{sub.max_tools} tool calls" in sub.system_prompt
+        seconds = int(sub.metadata["max_tool_time_ms"]) // 1000
+        assert f"{seconds} seconds of tool time" in sub.system_prompt
+        assert (
+            f"{seconds} seconds of tool time"
+            in sub.metadata["discovery_system_prompt"]
+        )

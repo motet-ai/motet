@@ -127,7 +127,7 @@ except Exception as e:
 
 ## Per-agent attribution
 
-When several agents participate in one turn, events carry `agent_id` (a qualified id such as `expert-panel.researcher`) so a client can route each event to the right pane. Attribution appears on token, turn, tool, reasoning, and thinking events alike. Nested loops (for example a `core.spawn_agents` child) also carry `parent_agent_id` — the agent that started that loop. The conversation-primary agent omits it. Clients that ignore either field still work — they just interleave every agent into one transcript.
+When several agents participate in one turn, events carry `agent_id` (a qualified id such as `expert-panel.researcher`) so a client can route each event to the right pane. Attribution appears on token, turn, tool, reasoning, thinking, and usage events alike. Nested loops (for example a `core.spawn_agents` child) also carry `parent_agent_id` — the agent that started that loop. The conversation-primary agent omits it. Clients that ignore either field still work — they just interleave every agent into one transcript.
 
 ## Event types
 
@@ -152,6 +152,12 @@ A spawn child token names both ids:
 ```
 
 This is raw model reasoning. It is *not* the same as `reasoning_step`, which is structured thought/action/observation.
+
+**`usage`** — running loop token envelope after each model call. When the loop has a priced total, `cost_usd` is top-level on the same frame (not inside a nested usage object). Absent `cost_usd` means unknown, not free.
+
+```json
+{"prompt_tokens": 1200, "completion_tokens": 80, "total_tokens": 1280, "cost_usd": 0.0042, "agent_id": "core.default"}
+```
 
 **`turn`** — turn state: `PREPARING`, `THINKING`, `RESPONDING`, `COMPLETING`.
 
@@ -273,39 +279,28 @@ Worth handling early: without it, a tool that needs authorization simply appears
 Use `@motet/ui-common`. It ships a framework-agnostic SSE reducer that already handles every event above, plus per-agent attribution, thinking traces, and tool state — so hand-rolling a `switch` over event names is re-implementing a maintained component.
 
 ```typescript
-import { parseSseBuffer, reduceChatEvent, type ChatMessage } from "@motet/ui-common";
+import { consumeChatSse, LiveTurnRegistry } from "@motet/ui-common";
 
-async function streamChat(messages: Array<{role: string; content: string}>, signal?: AbortSignal) {
+const turns = new LiveTurnRegistry();
+
+async function streamChat(conversationId: string, messages: Array<{role: string; content: string}>, signal?: AbortSignal) {
+  turns.start(conversationId);
   const response = await fetch("/api/v1/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
-    body: JSON.stringify({ messages, stream: true }),
+    body: JSON.stringify({ conversation_id: conversationId, messages, stream: true }),
     signal,
   });
 
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let currentMessage: ChatMessage = { role: "assistant", content: "" };
-  let buffer = "";
+  await consumeChatSse(response, (evt) => {
+    turns.applyChunk(conversationId, evt);
+  }, signal);
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const events = parseSseBuffer(buffer);
-    buffer = "";
-
-    for (const evt of events) {
-      const { message, agentKey } = reduceChatEvent(currentMessage, evt);
-      currentMessage = message;
-      // agentKey identifies which agent produced this event
-    }
-  }
-
-  return currentMessage;
+  return turns.get(conversationId)?.message;
 }
 ```
+
+`LiveTurnRegistry` keys the reduced assistant message by `conversation_id`, so two chats can stream at once. `overlayFor(visibleId)` returns that chat's live message, or a projected spawn child, or nothing. In React, `useLiveTurns(registry)` re-renders when any turn updates. The composer should call `isBusy(visibleId)` — not a global lock.
 
 In React, drive that from an effect and abort on unmount. `useThrottle` from the same package handles the render-rate problem described below:
 
@@ -319,7 +314,7 @@ function Chat({ messages }: { messages: ChatMessage[] }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    streamChat(messages, controller.signal).then(setCurrent);
+    streamChat("conv-demo", messages, controller.signal).then(setCurrent);
     return () => controller.abort();   // stop streaming when unmounted
   }, [messages]);
 
@@ -455,4 +450,4 @@ The browser's built-in `EventSource` is GET-only and cannot send an `Authorizati
 
 ---
 
-**Last Updated**: 2026-08-21
+**Last Updated**: 2026-08-29

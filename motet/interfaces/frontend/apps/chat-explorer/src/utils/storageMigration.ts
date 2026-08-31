@@ -5,7 +5,7 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-06
+ * Last Modified: 2026-08-29
  *
  * Description:
  *     One-time migration of Demo Chat X localStorage keys (demo_chat_x_*) to
@@ -39,6 +39,7 @@ const SIMPLE_SUFFIXES = [
   "overrides",
   "dark_mode",
   "debug_stream",
+  "cost_display",
 ] as const;
 
 let migrated = false;

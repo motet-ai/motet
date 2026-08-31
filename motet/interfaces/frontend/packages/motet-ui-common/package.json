@@ -16,7 +16,7 @@
   "scripts": {
     "lint": "eslint --ext .ts,.tsx src",
     "typecheck": "tsc --noEmit",
-    "test": "npx --yes tsx --test src/hooks/conversationAuth.test.ts src/utils/assistantTurn.test.ts src/components/auth/signedOutSession.test.ts"
+    "test": "npx --yes tsx --test src/hooks/conversationAuth.test.ts src/utils/assistantTurn.test.ts src/utils/liveTurns.test.ts src/utils/formatting.test.ts src/components/auth/signedOutSession.test.ts src/api/chat.test.ts"
   },
   "peerDependencies": {
     "react": "^18.0.0",

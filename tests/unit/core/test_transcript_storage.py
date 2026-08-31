@@ -5,12 +5,13 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-30
 
 Description:
     Verifies deterministic transcript sequence behavior and finalize storage path.
-    Ensures pre-reserved transcript_sequence is honored and first-turn system-message
-    inclusion logic remains correct.
+    Ensures pre-reserved transcript_sequence is honored, first-turn system-message
+    inclusion remains correct, empty tool_summaries are stored, and in-thread
+    rows do not ingest another agent's tool invocations.
 
 Dependencies:
     - pytest: test framework
@@ -230,38 +231,342 @@ def test_store_turn_transcript_sequence_conflict_reports_error(monkeypatch: pyte
     assert "sequence conflict" in str(conflict.get("canonical_transcript_error", ""))
 
 
-def test_store_subagent_reply_is_non_root_text_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_store_turn_transcript_persists_thinking_text(monkeypatch: pytest.MonkeyPatch) -> None:
     mem = FakeMemory()
     motet = _fake_motet(mem)
     motet.redis = FakeRedis()
-    recalled_types: List[str] = []
+
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
+    monkeypatch.setattr(
+        transcript_codec,
+        "serialize_transcript_items",
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
+    )
+
+    result = transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="hello")],
+        assistant_response="world",
+        agent_id="core.default",
+        transcript_sequence=9,
+        thinking_text="  I should greet the user.  ",
+    )
+
+    assert result["canonical_transcript_stored"] is True
+    rows = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)
+    md = rows[0].metadata
+    assert md.get("thinking_text") == "I should greet the user."
+    assert all(item.get("content") != "I should greet the user." for item in md.get("items") or [])
+
+
+def test_store_turn_transcript_persists_tool_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
+    monkeypatch.setattr(
+        transcript_codec,
+        "serialize_transcript_items",
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
+    )
+
+    result = transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="browse cnn.com")],
+        assistant_response="Here are today's headlines.",
+        agent_id="core.default",
+        transcript_sequence=10,
+        tool_summaries=[
+            {
+                "tool_name": "core.browse_page",
+                "status": "success",
+                "preview": "CNN homepage loaded.",
+                "step": 1,
+                "duration_ms": 2364,
+                "arguments": {"url": "https://cnn.com"},
+            }
+        ],
+    )
+
+    assert result["canonical_transcript_stored"] is True
+    rows = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)
+    md = rows[0].metadata
+    assert md.get("tool_summaries") == [
+        {
+            "tool_name": "core.browse_page",
+            "status": "success",
+            "preview": "CNN homepage loaded.",
+            "step": 1,
+            "duration_ms": 2364,
+        },
+    ]
+    assert "https://cnn.com" not in str(md.get("items"))
+
+
+def test_store_turn_transcript_persists_priced_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
+    monkeypatch.setattr(
+        transcript_codec,
+        "serialize_transcript_items",
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
+    )
+
+    transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="hello")],
+        assistant_response="world",
+        agent_id="core.default",
+        transcript_sequence=11,
+        cost_usd=0.0124,
+    )
+    md = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)[0].metadata
+    assert md.get("cost_usd") == pytest.approx(0.0124)
+
+
+def test_store_turn_transcript_omits_unpriced_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
+    monkeypatch.setattr(
+        transcript_codec,
+        "serialize_transcript_items",
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
+    )
+
+    transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="hello")],
+        assistant_response="world",
+        agent_id="core.default",
+        transcript_sequence=12,
+        cost_usd=0.0,
+    )
+    md = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)[0].metadata
+    assert "cost_usd" not in md
+
+
+def test_conversation_title_from_text_uses_first_line_snippet() -> None:
+    assert transcript_storage.conversation_title_from_text("research pricing") == "research pricing"
+    assert transcript_storage.conversation_title_from_text("  a\n\nb  ") == "a b"
+    assert transcript_storage.conversation_title_from_text("") == "New Chat"
+    long_title = "x" * 90
+    titled = transcript_storage.conversation_title_from_text(long_title)
+    assert titled.endswith("…")
+    assert len(titled) <= 81
+
+
+def test_store_turn_transcript_conversation_id_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+    recalled: List[str] = []
 
     orig_recall = mem.recall_conversation
 
     def tracking_recall(*, conversation_id: str, types: List[str], limit: int) -> List[Any]:
-        recalled_types.extend(types)
+        recalled.append(conversation_id)
         return orig_recall(conversation_id=conversation_id, types=types, limit=limit)
 
     mem.recall_conversation = tracking_recall  # type: ignore[method-assign]
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
     monkeypatch.setattr(
         transcript_codec,
         "serialize_transcript_items",
-        lambda items: [{"role": i.role, "content": i.content, "agent_id": getattr(i, "agent_id", None)} for i in items],
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
     )
 
-    result = transcript_storage.store_subagent_reply(
+    result = transcript_storage.store_turn_transcript(
         motet,
-        "price is 12",
-        agent_id="core.default.spawn-1",
-        root_agent_id="core.default",
+        messages=[Message(role="user", content="research pricing")],
+        assistant_response="price is 12",
+        agent_id="core.default",
+        transcript_sequence=20,
+        conversation_id="conv-1__spawn_1",
+        include_tool_invocations=True,
     )
 
     assert result["canonical_transcript_stored"] is True
-    assert "tool_invocation" not in recalled_types
-    rows = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)
-    md = rows[0].metadata
-    assert md.get("root_turn") is False
-    assert md.get("root_agent_id") == "core.default"
-    assert md.get("parent_agent_id") == "core.default"
-    assert md.get("agent_id") == "core.default.spawn-1"
-    assert any(item.get("content") == "price is 12" for item in md.get("items") or [])
+    assert "conv-1__spawn_1" in recalled
+    parent_rows = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)
+    child_rows = mem.recall_conversation(conversation_id="conv-1__spawn_1", types=["conversation_transcript"], limit=10)
+    assert parent_rows == []
+    assert child_rows[0].metadata.get("conversation_id") == "conv-1__spawn_1"
+    items = child_rows[0].metadata.get("items") or []
+    assert any(item.get("role") == "user" and item.get("content") == "research pricing" for item in items)
+    assert any(item.get("content") == "price is 12" for item in items)
+
+
+def test_store_turn_transcript_persists_spawn_children(monkeypatch: pytest.MonkeyPatch) -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
+    monkeypatch.setattr(
+        transcript_codec,
+        "serialize_transcript_items",
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
+    )
+
+    result = transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="fan out")],
+        assistant_response="here is the synthesis",
+        agent_id="core.default",
+        transcript_sequence=21,
+        spawn_children=[
+            {
+                "child_conversation_id": "conv-1__spawn_1",
+                "agent_id": "core.default.spawn-1",
+                "title": "research pricing",
+                "preview": "price is 12",
+                "cost_usd": 0.004,
+                "thinking_text": "look it up",
+                "tool_summaries": [
+                    {"tool_name": "core.web_search", "status": "success", "preview": "list price"}
+                ],
+            }
+        ],
+    )
+
+    assert result["canonical_transcript_stored"] is True
+    md = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)[0].metadata
+    assert md.get("spawn_children") == [
+        {
+            "child_conversation_id": "conv-1__spawn_1",
+            "agent_id": "core.default.spawn-1",
+            "title": "research pricing",
+            "preview": "price is 12",
+            "cost_usd": 0.004,
+            "thinking_text": "look it up",
+            "tool_summaries": [
+                {"tool_name": "core.web_search", "status": "success", "preview": "list price"}
+            ],
+        }
+    ]
+
+
+def test_store_turn_transcript_ignores_spawn_children_on_motet_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+    leaked = [
+        {"child_conversation_id": "iso-should-not-persist", "title": "leaked"},
+    ]
+    motet.distributed_context.metadata = {"spawn_children": leaked}
+    motet.metadata = motet.distributed_context.metadata
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
+    monkeypatch.setattr(
+        transcript_codec,
+        "serialize_transcript_items",
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
+    )
+
+    transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="fan out")],
+        assistant_response="done",
+        agent_id="core.default",
+        transcript_sequence=22,
+    )
+    md = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)[0].metadata
+    assert "spawn_children" not in md
+
+
+def _tool_invocation_row(*, tool_name: str, tool_call_id: str, agent_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        metadata={
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "provider": "builtin",
+            "status": "success",
+            "task_id": "task-1",
+            "conversation_id": "conv-1",
+            "schema_version": "1.0",
+            "agent_id": agent_id,
+            "arguments_json": "{}",
+            "started_at": "2026-08-31T01:09:18.000000Z",
+        },
+        tags=[tool_name, f"agent:{agent_id}", "conversation:conv-1", "stm"],
+    )
+
+
+def test_tool_invocations_for_agent_keeps_only_this_author() -> None:
+    parent = _tool_invocation_row(
+        tool_name="core.tools_search",
+        tool_call_id="call-parent",
+        agent_id="core.default",
+    )
+    child = _tool_invocation_row(
+        tool_name="expert-panel.recall_discussion",
+        tool_call_id="call-child",
+        agent_id="expert-panel.synthesizer",
+    )
+    kept = transcript_storage._tool_invocations_for_agent([parent, child], "expert-panel.synthesizer")
+    assert [row.metadata["tool_call_id"] for row in kept] == ["call-child"]
+    unscoped = transcript_storage._tool_invocations_for_agent([parent, child], None)
+    assert len(unscoped) == 2
+
+
+def test_store_turn_transcript_persists_empty_tool_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+    monkeypatch.setattr(transcript_service, "parse_and_dedupe_tool_invocation_memories", lambda *a, **k: [])
+    monkeypatch.setattr(
+        transcript_codec,
+        "serialize_transcript_items",
+        lambda items: [{"role": i.role, "content": i.content} for i in items],
+    )
+
+    result = transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="analyze fast food")],
+        assistant_response="optimistic take",
+        agent_id="expert-panel.optimist",
+        transcript_sequence=30,
+        tool_summaries=[],
+    )
+    assert result["canonical_transcript_stored"] is True
+    md = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)[0].metadata
+    assert md.get("tool_summaries") == []
+
+
+def test_store_turn_transcript_items_exclude_other_agent_tools() -> None:
+    mem = FakeMemory()
+    motet = _fake_motet(mem)
+    motet.redis = FakeRedis()
+    parent = _tool_invocation_row(
+        tool_name="core.tools_search",
+        tool_call_id="call-parent",
+        agent_id="core.default",
+    )
+    mem.store(
+        content="Executed tool 'core.tools_search': success",
+        type="tool_invocation",
+        item_id="tool_invocation:conv-1:call-parent",
+        metadata=dict(parent.metadata),
+    )
+    mem._items["tool_invocation:conv-1:call-parent"]["tags"] = list(parent.tags)
+
+    result = transcript_storage.store_turn_transcript(
+        motet,
+        messages=[Message(role="user", content="analyze fast food")],
+        assistant_response="optimistic take",
+        agent_id="expert-panel.optimist",
+        root_turn=False,
+        transcript_sequence=31,
+        tool_summaries=[],
+    )
+    assert result["canonical_transcript_stored"] is True
+    md = mem.recall_conversation(conversation_id="conv-1", types=["conversation_transcript"], limit=10)[0].metadata
+    assert md.get("tool_summaries") == []
+    items = transcript_codec.deserialize_transcript_items(md.get("items"))
+    tool_names = [getattr(item, "tool_name", None) for item in items]
+    assert "core.tools_search" not in tool_names

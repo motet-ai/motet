@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     REST API endpoints for cost tracking, budget management, and usage analytics.
@@ -276,6 +276,33 @@ class CostEvent(BaseModel):
     principal_id: Optional[str] = Field(
         None,
         description="Principal (user) who invoked the model command for this event",
+    )
+
+
+class ConversationCostResponse(BaseModel):
+    """Priced rollup for one conversation (and isolate_conversation children)."""
+
+    conversation_id: str = Field(
+        ...,
+        description="Conversation ID",
+        json_schema_extra={"example": "conv-123"},
+    )
+    event_count: int = Field(
+        0,
+        description="Number of priced usage events recorded for this conversation",
+        json_schema_extra={"example": 4},
+    )
+    cost_usd: Optional[float] = Field(
+        None,
+        description=(
+            "Estimated USD when priced model calls were recorded. "
+            "Omitted when unknown; never means free."
+        ),
+        json_schema_extra={"example": 0.0412},
+    )
+    include_children: bool = Field(
+        True,
+        description="Whether isolate_conversation child ids are included in the rollup",
     )
 
 
@@ -769,6 +796,70 @@ async def get_cost_events(
             tenant_id=effective_tenant_id,
         )
         raise HTTPException(status_code=500, detail=f"Failed to get cost events: {str(e)}")
+
+
+@router.get(
+    "/conversation/{conversation_id}",
+    response_model=ConversationCostResponse,
+    summary="Get conversation cost summary",
+    description=(
+        "Estimated USD for one conversation. Includes isolate_conversation "
+        "children. cost_usd is omitted when unknown (not free)."
+    ),
+    responses={
+        200: {"description": "Conversation cost returned"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Not authorized to read another tenant's costs"},
+    },
+)
+async def get_conversation_cost(
+    conversation_id: str,
+    include_children: bool = Query(
+        True,
+        description="Include isolate_conversation child conversation ids in the rollup",
+    ),
+    tenant_id: Optional[str] = Query(
+        None,
+        description=_TENANT_ID_DESCRIPTION,
+        json_schema_extra={"example": "motet-global"},
+    ),
+    principal: Principal = Depends(get_current_principal),
+) -> ConversationCostResponse:
+    """Return the priced conversation rollup for Chat Explorer and ops clients."""
+    tenant_ids, aggregated = _resolve_cost_tenants(tenant_id, principal)
+    if aggregated or len(tenant_ids) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation cost is scoped to one tenant",
+        )
+    cid = (conversation_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    try:
+        from motet.core.conversations.transcript_storage import coerce_cost_usd
+        from motet.core.cost import get_cost_tracking_service
+
+        summary = get_cost_tracking_service().get_conversation_cost_summary(
+            tenant_ids[0],
+            cid,
+            include_children=include_children,
+        )
+        event_count = int(summary.get("event_count") or 0)
+        priced = coerce_cost_usd(summary.get("cost_usd")) if event_count > 0 else None
+        return ConversationCostResponse(
+            conversation_id=cid,
+            event_count=event_count,
+            cost_usd=priced,
+            include_children=include_children,
+        )
+    except Exception as e:
+        logger.error(
+            "conversation_cost_endpoint_failed",
+            error=str(e),
+            conversation_id=cid,
+            tenant_id=tenant_ids[0],
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to get conversation cost: {str(e)}")
 
 
 __all__ = ["router"]

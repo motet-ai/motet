@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-31
 
 Description:
     The `agent_turn` command: one complete turn of agent execution.
@@ -76,6 +76,9 @@ from motet.core.orchestration.turn.complete import (
     _validate_and_enrich_media,
     complete_agent_turn,
     extract_response_text,
+    extract_thinking_text,
+    extract_tool_summaries,
+    extract_spawn_children,
     extract_turn_cost,
     extract_turn_usage,
     resolve_turn_model,
@@ -408,6 +411,27 @@ def agent_turn(data: AgentTurnData) -> Dict[str, Any]:
     if not principal_may_access_agent(agent_config, principal_roles):
         raise RuntimeError(f"Role not authorized for agent '{qualified_id}'")
 
+    spawn_contract = None
+    try:
+        from motet.core.conversations.children import spawn_contract_for_followup
+        from motet.core.conversations.registry import get_conversation_sync
+
+        spawn_row = get_conversation_sync(
+            str(getattr(motet, "motet_id", None) or ""),
+            str(getattr(motet, "tenant_id", None) or ""),
+            str(getattr(motet, "principal_id", None) or ""),
+            str(getattr(motet, "conversation_id", None) or ""),
+        )
+        spawn_contract = spawn_contract_for_followup(spawn_row, qualified_id)
+    except Exception as exc:
+        logger.warning(
+            "spawn_followup_contract_lookup_failed",
+            conversation_id=getattr(motet, "conversation_id", None),
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        spawn_contract = None
+
     # Apply conversation prefix in the root command and propagate to child commands.
     prefixed_conversation_id = ensure_conversation_id_prefix(
         motet.conversation_id,
@@ -467,6 +491,15 @@ def agent_turn(data: AgentTurnData) -> Dict[str, Any]:
 
     # Normalize request messages and prepend configured system prompt.
     system_prompt = getattr(agent_config, "system_prompt", "") or ""
+    if spawn_contract and spawn_contract.get("discover"):
+        agent_meta = getattr(agent_config, "metadata", None) or {}
+        discovery_prompt = (
+            agent_meta.get("discovery_system_prompt")
+            if isinstance(agent_meta, dict)
+            else None
+        )
+        if discovery_prompt:
+            system_prompt = str(discovery_prompt)
     prompt_policy = prompt_policy_from_agent(agent_config)
     history: List[Message] = assemble_turn_history(
         to_turn_messages(data.messages),
@@ -491,6 +524,18 @@ def agent_turn(data: AgentTurnData) -> Dict[str, Any]:
         schema_exporter,
         max_tools=getattr(agent_config, "max_tools", None),
     )
+    if spawn_contract and not spawn_contract.get("discover"):
+        declared = [
+            str(name).strip()
+            for name in (spawn_contract.get("tools") or [])
+            if str(name).strip()
+        ]
+        if declared:
+            from motet.core.tools.builtin.spawn_agents import resolve_child_tool_schemas
+
+            caged = resolve_child_tool_schemas(motet, declared)
+            if caged:
+                resolved_tools = caged
 
     # Build model policy from request context over config defaults over stack defaults.
     stack_cfg = getattr(getattr(motet, "stack", None), "config", None)
@@ -572,6 +617,10 @@ def agent_turn(data: AgentTurnData) -> Dict[str, Any]:
             finalize_root_agent_id=finalize_root_agent_id,
             reserve_sequence=reserve_sequence,
             pending_action_carry=pending.carry,
+            thinking_text=extract_thinking_text(turn_result),
+            tool_summaries=extract_tool_summaries(turn_result),
+            cost_usd=extract_turn_cost(turn_result),
+            spawn_children=extract_spawn_children(turn_result),
         )
 
     def _maybe_suspended_turn_response(result: Any) -> Optional[Dict[str, Any]]:
@@ -640,9 +689,17 @@ def agent_turn(data: AgentTurnData) -> Dict[str, Any]:
                 r.model_dump(mode="json", exclude_none=True) for r in skill_catalog_ref_objs
             ]
 
-        discovery_filter_metadata = get_discovery_filter_metadata(
-            getattr(agent_config, "tool_filter", None),
-        ) or {}
+        stored_filter = (
+            spawn_contract.get("tool_filter_metadata")
+            if isinstance(spawn_contract, dict)
+            else None
+        )
+        if isinstance(stored_filter, dict) and stored_filter:
+            discovery_filter_metadata = dict(stored_filter)
+        else:
+            discovery_filter_metadata = get_discovery_filter_metadata(
+                getattr(agent_config, "tool_filter", None),
+            ) or {}
 
         def _turn_has_attachments(messages: List[Message]) -> bool:
             for msg in reversed(messages):
@@ -844,6 +901,10 @@ def agent_turn(data: AgentTurnData) -> Dict[str, Any]:
             finalize_root_agent_id=finalize_root_agent_id,
             reserve_sequence=reserve_sequence,
             pending_action_carry=pending.carry,
+            thinking_text=extract_thinking_text(turn_result),
+            tool_summaries=extract_tool_summaries(turn_result),
+            cost_usd=extract_turn_cost(turn_result),
+            spawn_children=extract_spawn_children(turn_result),
         )
         # Optional fail-soft export hooks (e.g. Langfuse generation push).
         run_after_finalize_hooks(

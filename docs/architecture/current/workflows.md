@@ -33,7 +33,7 @@ A **template** is the workflow. A **run** (`workflow_run_id`) is one execution. 
 
 From a command: `motet.workflows.list()`, `get(id)`, `run(id, context=...)`. Those delegate to `workflow_execution`.
 
-A workflow step that needs a loop over a prompt uses `command_type="core.agent_loop"` (no registry agent, no turn hooks). Use `core.agent_turn` on a step only for a full chat turn. `isolate_conversation` on a step gives the child its own conversation and separately attributable cost.
+A workflow step that needs a loop over a prompt uses `command_type="core.agent_loop"` (no registry agent, no turn hooks). Use `core.agent_turn` on a step only for a full chat turn. `isolate_conversation` on a step gives the child its own opaque conversation id, parent/root pointers, and separately attributable cost. Deleting the parent conversation deletes those isolated children.
 
 ## Model-visible name
 

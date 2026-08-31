@@ -25,7 +25,7 @@ Write/read paths for recorded usage and aggregates used by dashboards or guardra
 
 - **Event stream** (`cost:model_usage:{tenant}`): append-only audit trail of every model call with provenance (capped at 100k entries).
 - **Daily aggregates** (`cost:summary:{tenant}:{date}`): tenant and per-principal daily rollups (7-day TTL).
-- **Per-conversation running totals** (`cost:conversation:{tenant}:{cid}`): exact totals (cost, tokens, event count, models/providers) incremented at write time and read O(1) by `get_conversation_cost_summary` — no stream scan. Workflow `isolate_conversation` child IDs (`{parent}__suffix`) are indexed under the parent's `:children` set so `include_children=True` rollups are exact; parentage is derived via `motet.core.conversations.lineage.root_conversation_id_of` (the single owner of the child-ID convention). Keys expire after 30 days of inactivity; the stream remains the audit trail.
+- **Per-conversation running totals** (`cost:conversation:{tenant}:{cid}`): exact totals (cost, tokens, event count, models/providers) incremented at write time and read O(1) by `get_conversation_cost_summary` — no stream scan. Isolated child conversation IDs (workflow `isolate_conversation` and `core.spawn_agents`) are indexed under the root's `:children` set so `include_children=True` rollups are exact; parentage is the stored `root_conversation_id` on the child context (or the lineage parentage hash). Keys expire after 30 days of inactivity; the stream remains the audit trail.
 
 #### Per-turn cost (outside this package)
 

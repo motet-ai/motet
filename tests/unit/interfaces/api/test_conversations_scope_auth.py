@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-14
+Last Modified: 2026-08-31
 
 Description:
     Unit tests for conversation list surface validation, agent visibility,
@@ -71,6 +71,8 @@ def _ok_list_result() -> Dict[str, Any]:
                         "updated_at": 2.0,
                         "agent_id": "core.default",
                         "surface_id": "demo_chat",
+                        "turn_agent_id": "core.subagent",
+                        "parent_conversation_id": "conv-parent",
                     }
                 ]
             },
@@ -162,7 +164,10 @@ def test_admin_may_list_admin_agent(agent_registry: _FakeRegistry) -> None:
         )
 
     assert response.status_code == 200, response.text
-    assert response.json()["conversations"][0]["id"] == "conv-1"
+    item = response.json()["conversations"][0]
+    assert item["id"] == "conv-1"
+    assert item["turn_agent_id"] == "core.subagent"
+    assert item["parent_conversation_id"] == "conv-parent"
 
 
 def test_clear_conversation_unwraps_invoker_envelope() -> None:

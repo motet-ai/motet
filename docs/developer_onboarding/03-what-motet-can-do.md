@@ -42,7 +42,7 @@ reviews, pricing = motet.join([
 
 A sub-agent is simply an agent turn invoked by something other than a user: another agent, a workflow step, or a loop fanning out.
 
-By default a sub-agent shares the parent's conversation, so its output lands in the same transcript tagged with its `agent_id` and its spend rolls up to the parent. A workflow step can opt out with `isolate_conversation`, which gives it a child conversation and separately attributable cost. Several agents is therefore the ordinary case rather than a mode you switch on: a registry holds many configurations, one agent can hand work to another, and a workflow can fan several out and combine the results.
+A `core.spawn_agents` child is its own conversation, titled from the spawn brief and listed next to the parent. Follow-up is `agent_turn` as `core.subagent`. A workflow step can also isolate with `isolate_conversation`. Spend on isolated children rolls up to the root conversation. Several agents is therefore the ordinary case rather than a mode you switch on: a registry holds many configurations, one agent can hand work to another, and a workflow can fan several out and combine the results.
 
 See [The agent loop](./07a-agent-loop.md) for the mechanics and [Advanced Concepts](./24-advanced-concepts.md) for the patterns, including a facilitator that picks who speaks next at runtime.
 

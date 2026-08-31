@@ -5,15 +5,16 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-31
 
 Description:
     Agent configuration registry. Lookup from fully-qualified agent_id
-    (e.g. core.default, core.motet_admin) to AgentConfig used when invoking the
-    agent command. Provides ToolFilter, TurnHooks (including after_finalize),
-    AgentConfig, and AgentConfigRegistry with in-code registration for built-in
-    agents. Bare chat names are opt-in via AgentConfig.aliases only (issue #186);
-    agent_id alone is never auto-registered as a global alias.
+    (e.g. core.default, core.motet_admin, core.subagent) to AgentConfig used
+    when invoking the agent command. Provides ToolFilter, TurnHooks (including
+    after_finalize), AgentConfig, and AgentConfigRegistry with in-code
+    registration for built-in agents. Bare chat names are opt-in via
+    AgentConfig.aliases only (issue #186); agent_id alone is never
+    auto-registered as a global alias.
 
 Dependencies:
     - pydantic: AgentConfig, ToolFilter, TurnHooks models
@@ -28,7 +29,10 @@ Usage:
     tools = resolve_tools(config.tool_filter, tool_registry, schema_exporter)
 
 Notes:
-    - Built-in agents (core.default, core.motet_admin) registered at import.
+    - Built-in agents (core.default, core.motet_admin, core.subagent) registered at import.
+    - ``core.subagent`` is ``builtin_subagent_config()``: rails on the AgentConfig,
+      briefs formatted from those fields. Spawn reads the live registry entry.
+    - ``selectable=False`` agents are callable but omitted from new-chat pickers.
     - Use register_agent(AgentConfig(...)) for normal registration; base register(key, item,...) requires key == qualified id.
     - Canonical address is always ``{bundle_id}.{agent_id}`` (or ``core.{agent_id}``).
     - Explicit ``aliases`` are optional global shortcuts; colliding claims fail fast.
@@ -234,6 +238,14 @@ class AgentConfig(BaseModel):
     allowed_roles: List[str] = Field(
         default=["*"],
         description="Roles allowed to invoke this agent. '*' = any authenticated principal.",
+    )
+    selectable: bool = Field(
+        default=True,
+        description=(
+            "When true, chat UIs may offer this agent as a new-conversation "
+            "picker option. When false the agent is still callable (follow-up, "
+            "tools) but is not a start-a-chat choice."
+        ),
     )
     system_prompt: str = Field(
         ...,
@@ -583,9 +595,89 @@ MOTET_ADMIN_SYSTEM_PROMPT = (
     "Cite the tool results you use when answering. If data is unavailable, say so."
 )
 
+CORE_SUBAGENT_ID = "core.subagent"
+
+
+def _subagent_brief_from_config(cfg: "AgentConfig", *, discover: bool) -> str:
+    """Worker brief whose rail numbers come from the same AgentConfig."""
+    meta = cfg.metadata if isinstance(cfg.metadata, dict) else {}
+    try:
+        tool_time_ms = int(meta.get("max_tool_time_ms") or 0)
+    except (TypeError, ValueError):
+        tool_time_ms = 0
+    seconds = max(1, tool_time_ms // 1000)
+    catalog = (
+        "You may search the catalog for tools this slice needs. Prefer any tools "
+        "already listed for this turn before searching."
+        if discover
+        else "Use the tools already listed for this turn. Do not search the catalog "
+        "for more."
+    )
+    return (
+        "You are a focused subagent working one task. Stay on that task unless "
+        "the user redirects you.\n"
+        f"{catalog}\n"
+        f"You have at most {cfg.max_iterations} tool rounds, "
+        f"{cfg.max_tools} tool calls, and "
+        f"{seconds} seconds of tool time. "
+        "A partial answer with sources beats one more fetch."
+    )
+
+
+def builtin_subagent_config() -> AgentConfig:
+    """Shipped ``core.subagent``. Register and spawn both use this object.
+
+    Rails live on the AgentConfig. Briefs are formatted from those fields so
+    a rail edit updates the first-turn / follow-up prompt in the same place.
+    """
+    cfg = AgentConfig(
+        agent_id="subagent",
+        display_name="Subagent",
+        description=(
+            "Parallel spawn worker. Used for core.spawn_agents children "
+            "and follow-up on those conversations. Not a new-chat picker "
+            "option."
+        ),
+        allowed_roles=["*"],
+        selectable=False,
+        system_prompt="You are a focused subagent working one task.",
+        tool_filter=ToolFilter(
+            mode="discovery",
+            required_tools=[
+                "core.help",
+                "core.tools_search",
+                "core.tool_call",
+            ],
+            exclude_tools=["core.spawn_agents"],
+        ),
+        turn_hooks=TurnHooks(
+            conversation_analysis=None,
+            memory_reset=None,
+            context_prepare="core.prepare_context",
+            finalize="core.finalize_turn",
+        ),
+        max_iterations=10,
+        max_tools=8,
+        max_cost_usd=0.20,
+        max_prompt_tokens=80_000,
+        metadata={"max_tool_time_ms": 60_000},
+        bundle_id=None,
+    )
+    return cfg.model_copy(
+        update={
+            "system_prompt": _subagent_brief_from_config(cfg, discover=False),
+            "metadata": {
+                **dict(cfg.metadata or {}),
+                "discovery_system_prompt": _subagent_brief_from_config(
+                    cfg, discover=True
+                ),
+            },
+        }
+    )
+
 
 def _register_builtin_agents(registry: AgentConfigRegistry) -> None:
-    """Register core.default and core.motet_admin at module load."""
+    """Register core.default, core.motet_admin, and core.subagent at module load."""
     registry.register_agent(
         AgentConfig(
             agent_id="default",
@@ -641,6 +733,7 @@ def _register_builtin_agents(registry: AgentConfigRegistry) -> None:
             bundle_id=None,
         )
     )
+    registry.register_agent(builtin_subagent_config())
 
 
 # ---------------------------------------------------------------------------

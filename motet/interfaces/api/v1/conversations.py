@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-31
 
 Description:
     Conversations API for the Motet. Provides REST endpoints
@@ -28,6 +28,8 @@ Notes:
     - Commands run on workers with MEMORY_OPERATIONS capability.
     - List rejects unknown surface_id values and agents the principal
       cannot see.
+    - List and get always include parent_conversation_id (null for root chats).
+      Registry extras such as spawn_contract stay off the HTTP schema.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..shared.auth import get_current_principal
 from ..shared.identity import get_principal_context
@@ -113,14 +115,57 @@ def _distributed_command(
     )
 
 
-class ConversationItem(BaseModel):
-    """Single conversation in list response, with optional agent_id and surface_id."""
+class ConversationParentage(BaseModel):
+    """Parent pointer shared by list items and conversation detail."""
+
+    parent_conversation_id: Optional[str] = Field(
+        None,
+        description=(
+            "Immediate parent conversation id when this conversation is an "
+            "isolated child (e.g. a spawn card). Null for root chats."
+        ),
+        json_schema_extra={"example": "conv-123"},
+    )
+
+    @field_validator("parent_conversation_id", mode="before")
+    @classmethod
+    def _blank_parent_to_none(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
+class ConversationItem(ConversationParentage):
+    """Single conversation in the list response."""
+
+    model_config = ConfigDict(extra="ignore")
+
     id: str = Field(..., description="Conversation ID", json_schema_extra={"example": "conv-123"})
     title: str = Field(..., description="Display title", json_schema_extra={"example": "New Chat"})
     created_at: float = Field(..., description="Creation timestamp (Unix)")
     updated_at: float = Field(..., description="Last update timestamp (Unix)")
     agent_id: Optional[str] = Field(None, description="Agent that owns this conversation (e.g. core.default)")
     surface_id: Optional[str] = Field(None, description="Surface/channel (e.g. demo_chat, ops_dashboard)")
+    turn_agent_id: Optional[str] = Field(
+        None,
+        description=(
+            "Agent that runs follow-up turns when it differs from the list-scope "
+            "agent (e.g. core.subagent on a spawn child)."
+        ),
+    )
+
+
+def _conversation_item_from_row(raw: Any) -> ConversationItem:
+    """Validate a registry row onto the list schema; extra registry keys are dropped."""
+    row = dict(raw) if isinstance(raw, dict) else {}
+    row.setdefault("id", "")
+    row.setdefault("title", "New Chat")
+    if row.get("created_at") is None:
+        row["created_at"] = 0
+    if row.get("updated_at") is None:
+        row["updated_at"] = 0
+    return ConversationItem.model_validate(row)
 
 
 class ConversationListResponse(BaseModel):
@@ -154,6 +199,80 @@ class ConversationHistoryAttachment(BaseModel):
         serialization_alias="bytes",
         description="Size in bytes",
         json_schema_extra={"example": 1024},
+    )
+
+
+class ConversationToolSummary(BaseModel):
+    """Short tool invocation for chat reload. No arguments or result body."""
+
+    tool_name: str = Field(
+        ...,
+        description="Registry tool name",
+        json_schema_extra={"example": "core.web_search"},
+    )
+    status: str = Field(
+        ...,
+        description="Invocation outcome (success or error)",
+        json_schema_extra={"example": "success"},
+    )
+    preview: Optional[str] = Field(
+        default=None,
+        description="One-line result preview when available",
+        json_schema_extra={"example": "Found 3 pricing pages."},
+    )
+    step: Optional[int] = Field(
+        default=None,
+        description="Loop iteration this tool ran in, used to rebuild sidebar Step N",
+        json_schema_extra={"example": 1},
+    )
+    duration_ms: Optional[int] = Field(
+        default=None,
+        description="Tool wall time in milliseconds when recorded",
+        json_schema_extra={"example": 2364},
+    )
+
+
+class ConversationSpawnChild(BaseModel):
+    """Card pointer from a parent turn to an isolated spawn-child conversation."""
+
+    model_config = ConfigDict(extra="allow")
+
+    child_conversation_id: str = Field(
+        ...,
+        description="Isolated conversation id for the spawn child",
+        json_schema_extra={"example": "iso-0f1e2d3c4b5a69788776655443322110"},
+    )
+    agent_id: Optional[str] = Field(
+        default=None,
+        description="Qualified spawn-child agent id used for live stream attribution",
+        json_schema_extra={"example": "core.default.spawn-1"},
+    )
+    title: str = Field(
+        ...,
+        description="Display title from the spawn instruction",
+        json_schema_extra={"example": "Find current pricing for the Acme enterprise tier"},
+    )
+    preview: Optional[str] = Field(
+        default=None,
+        description="Short preview of the child's first-turn reply",
+        json_schema_extra={"example": "Enterprise list price is $12 per seat."},
+    )
+    cost_usd: Optional[float] = Field(
+        default=None,
+        description="Estimated USD for the child's first turn when priced",
+        json_schema_extra={"example": 0.004},
+    )
+    thinking_text: Optional[str] = Field(
+        default=None,
+        description="Provider reasoning from the child's first turn, for parent-rail reload",
+        json_schema_extra={"example": "Look up the published list price."},
+    )
+    tool_summaries: Optional[List[ConversationToolSummary]] = Field(
+        default=None,
+        description="Short tool name/status/preview rows from the child's first turn",
+        json_schema_extra={
+            "example": [{"tool_name": "core.web_search", "status": "success", "preview": "list price"}]
+        },
     )
 
 
@@ -193,6 +312,39 @@ class ConversationHistoryMessage(BaseModel):
         ),
         json_schema_extra={"example": "core.default"},
     )
+    thinking_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider reasoning for this assistant turn, when stored. "
+            "Used by chat UIs after reload; not model replay content."
+        ),
+        json_schema_extra={"example": "I should look up the current price first."},
+    )
+    tool_summaries: Optional[List[ConversationToolSummary]] = Field(
+        default=None,
+        description=(
+            "Short tool name, status, and preview for this assistant turn. "
+            "Optional step is the loop iteration for sidebar Step N. "
+            "Used by chat UIs after reload; not full tool payloads."
+        ),
+    )
+    cost_usd: Optional[float] = Field(
+        default=None,
+        description=(
+            "Estimated USD for this agent's priced model calls. "
+            "Omitted when unpriced; never means free."
+        ),
+        json_schema_extra={"example": 0.0124},
+    )
+    spawn_children: Optional[List[ConversationSpawnChild]] = Field(
+        default=None,
+        description=(
+            "Card pointers to isolated spawn-child conversations created during "
+            "this assistant turn. Each card includes the child's thinking, tool "
+            "summaries, and cost when those were stored on the child conversation. "
+            "Used by chat UIs after reload; not model replay content."
+        ),
+    )
 
 
 def _coerce_conversation_history(raw: Any) -> List[ConversationHistoryMessage]:
@@ -214,7 +366,34 @@ def _coerce_conversation_history(raw: Any) -> List[ConversationHistoryMessage]:
     return out
 
 
-class ConversationDetailResponse(BaseModel):
+def _conversation_priced_cost(tenant_id: Optional[str], conversation_id: str) -> Optional[float]:
+    """Priced conversation rollup, or None when unknown (not free)."""
+    cid = (conversation_id or "").strip()
+    if not cid or not tenant_id:
+        return None
+    try:
+        from motet.core.conversations.transcript_storage import coerce_cost_usd
+        from motet.core.cost import get_cost_tracking_service
+
+        summary = get_cost_tracking_service().get_conversation_cost_summary(
+            tenant_id,
+            cid,
+            include_children=True,
+        )
+        if int(summary.get("event_count") or 0) <= 0:
+            return None
+        return coerce_cost_usd(summary.get("cost_usd"))
+    except Exception as e:
+        logger.debug(
+            "conversation_priced_cost_unavailable",
+            conversation_id=cid,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        return None
+
+
+class ConversationDetailResponse(ConversationParentage):
     """Response model for conversation details."""
     conversation_id: str = Field(..., description="Conversation ID", json_schema_extra={"example": "conv-123"})
     history: List[ConversationHistoryMessage] = Field(
@@ -236,6 +415,22 @@ class ConversationDetailResponse(BaseModel):
         description="Set when stored transcript rows exist but cannot be decrypted",
         json_schema_extra={"example": "This conversation has stored messages that cannot be decrypted."},
     )
+    cost_usd: Optional[float] = Field(
+        None,
+        description=(
+            "Estimated USD for this conversation when priced model calls were recorded. "
+            "Includes isolate_conversation children. Omitted when unknown."
+        ),
+        json_schema_extra={"example": 0.0412},
+    )
+    turn_agent_id: Optional[str] = Field(
+        None,
+        description=(
+            "Agent that runs follow-up turns when it differs from the list-scope "
+            "agent (e.g. core.subagent on a spawn child)."
+        ),
+        json_schema_extra={"example": "core.subagent"},
+    )
 
 
 class ConversationClearResponse(BaseModel):
@@ -243,8 +438,27 @@ class ConversationClearResponse(BaseModel):
     conversation_id: str = Field(..., description="Cleared conversation ID", json_schema_extra={"example": "conv-123"})
     cleared: Dict[str, int] = Field(
         ...,
-        description="Counts of cleared items",
+        description="Counts of cleared items across this conversation and isolated descendants",
         json_schema_extra={"example": {"memory": 10, "vector": 5}},
+    )
+    child_conversation_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Isolated descendant conversation ids cleared with this conversation "
+            "(spawn children and isolate_conversation steps)."
+        ),
+        json_schema_extra={"example": ["iso-ab12cd34ef56"]},
+    )
+
+
+def _clear_response(conversation_id: str, data: Dict[str, Any]) -> ConversationClearResponse:
+    kids = data.get("child_conversation_ids") or []
+    if not isinstance(kids, list):
+        kids = []
+    return ConversationClearResponse(
+        conversation_id=data.get("conversation_id", conversation_id),
+        cleared=data.get("cleared") or {"memory": 0, "vector": 0},
+        child_conversation_ids=[str(item) for item in kids if item],
     )
 
 
@@ -264,7 +478,7 @@ class ConversationRenameResponse(BaseModel):
     summary="List conversations",
     description="Get list of conversations for the current principal in the tenant",
     response_model=ConversationListResponse,
-    response_description="List of conversations with id, title, timestamps, optional agent_id/surface_id",
+    response_description="List of conversations with id, title, timestamps, and optional scope/parent fields",
     responses={
         200: {"description": "Conversation list returned"},
         400: {"description": "Invalid or unknown surface_id"},
@@ -321,17 +535,7 @@ async def list_conversations(
 
         data = payload.get("data") or {}
         raw = data.get("conversations") or []
-        conversations = [
-            ConversationItem(
-                id=c.get("id", ""),
-                title=c.get("title", "New Chat"),
-                created_at=float(c.get("created_at", 0)),
-                updated_at=float(c.get("updated_at", 0)),
-                agent_id=c.get("agent_id"),
-                surface_id=c.get("surface_id"),
-            )
-            for c in raw
-        ]
+        conversations = [_conversation_item_from_row(c) for c in raw]
         return ConversationListResponse(conversations=conversations)
     except HTTPException:
         raise
@@ -344,7 +548,7 @@ async def list_conversations(
     "/{conversation_id}",
     summary="Get conversation details",
     description=(
-        'Get conversation history and counts for a specific conversation. Each history message may include **agent_id** (qualified registry id) for the authoring agent and **parent_agent_id** when the author is a nested loop.'
+        'Get conversation history and counts for a specific conversation. Each history message may include **agent_id** (qualified registry id) for the authoring agent, **parent_agent_id** when the author is a nested loop, **thinking_text** when provider reasoning was stored, **tool_summaries** (name, status, preview) when tools ran, **cost_usd** when that agent loop recorded a priced estimate, and **spawn_children** when this turn created isolated spawn conversations. The conversation may include **cost_usd** for the priced conversation rollup, **turn_agent_id** when follow-up uses a different agent than the list scope, and **parent_conversation_id** (null for root chats).'
     ),
     response_model=ConversationDetailResponse,
     response_description="Conversation details with typed history messages and counts",
@@ -360,8 +564,11 @@ async def get_conversation(
     Returns empty history when workers are unavailable (no 500) so the UI keeps working.
 
     History items are typed in OpenAPI: each message may include **agent_id** when the canonical
-    transcript recorded the authoring agent, and **parent_agent_id** when the author
-    is a nested loop.
+    transcript recorded the authoring agent, **parent_agent_id** when the author
+    is a nested loop, **thinking_text** when provider reasoning was stored,
+    **tool_summaries** (name, status, preview) when tools ran, and
+    **spawn_children** when this turn created isolated spawn conversations.
+    The conversation includes **parent_conversation_id** (null for root chats).
     """
     try:
         from motet.core.commands.builtin.conversation import conversation_get as conversation_get_cmd
@@ -405,6 +612,9 @@ async def get_conversation(
             counts=data.get("counts") or {"memory": 0, "vector": 0},
             summary=data.get("summary"),
             warning=data.get("warning"),
+            cost_usd=_conversation_priced_cost(tenant_id, conversation_id),
+            turn_agent_id=data.get("turn_agent_id"),
+            parent_conversation_id=data.get("parent_conversation_id"),
         )
     except HTTPException:
         raise
@@ -422,7 +632,7 @@ async def get_conversation(
 @router.post(
     "/{conversation_id}/clear",
     summary="Clear conversation",
-    description="Clear conversation from registry and associated memories/vectors",
+    description="Clear this conversation and its isolated descendants from the registry and associated memories/vectors",
     response_model=ConversationClearResponse,
     response_description="Clear operation results",
 )
@@ -431,7 +641,7 @@ async def clear_conversation(
     principal: Principal = Depends(get_current_principal),
 ):
     """
-    Clear a conversation via conversation_clear command (registry + memory/vector).
+    Clear a conversation via conversation_clear (registry + memory/vector, plus isolated descendants).
     Auth: same as chat (JWT, X-API-Key, or service account).
     """
     try:
@@ -463,10 +673,7 @@ async def clear_conversation(
             raise HTTPException(status_code=500, detail=msg)
 
         data = payload.get("data") or {}
-        return ConversationClearResponse(
-            conversation_id=data.get("conversation_id", conversation_id),
-            cleared=data.get("cleared") or {"memory": 0, "vector": 0},
-        )
+        return _clear_response(conversation_id, data)
     except HTTPException:
         raise
     except Exception as e:
@@ -533,7 +740,7 @@ async def rename_conversation(
 @router.delete(
     "/{conversation_id}",
     summary="Delete conversation",
-    description="Remove conversation from registry and clear associated memories/vectors",
+    description="Remove this conversation and its isolated descendants from the registry and clear associated memories/vectors",
     response_model=ConversationClearResponse,
     response_description="Deleted conversation id and cleared counts",
 )
@@ -542,7 +749,7 @@ async def delete_conversation(
     principal: Principal = Depends(get_current_principal),
 ):
     """
-    Delete a conversation (same as clear): registry + memory/vector via conversation_clear command.
+    Delete a conversation (same as clear): registry + memory/vector via conversation_clear, including isolated descendants.
     Auth: same as chat (JWT, X-API-Key, or service account).
     """
     try:
@@ -574,10 +781,7 @@ async def delete_conversation(
             raise HTTPException(status_code=500, detail=msg)
 
         data = payload.get("data") or {}
-        return ConversationClearResponse(
-            conversation_id=data.get("conversation_id", conversation_id),
-            cleared=data.get("cleared") or {"memory": 0, "vector": 0},
-        )
+        return _clear_response(conversation_id, data)
     except HTTPException:
         raise
     except Exception as e:

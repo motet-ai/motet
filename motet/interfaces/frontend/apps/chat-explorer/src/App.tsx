@@ -5,7 +5,7 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-27
+ * Last Modified: 2026-08-31
  *
  * Description:
  *     Top-level React application for the Chat Explorer UI. This file is the main
@@ -45,6 +45,7 @@
  *       with a key icon when the provider has an API key. Models without a key
  *       stay in the list but cannot be selected. Enable thinking and reasoning
  *       effort sit to the right of the select.
+ *     - Motet Settings persist cost-line visibility (`chat_explorer_cost_display`).
  *     - Retrieval is a composer popover (This chat / My files / Workspace) with a
  *       closed-state chip; Advanced holds optional file IDs and tags.
  *     - Auto-rename from first user message only for demo_chat surface; other
@@ -52,7 +53,7 @@
  *     - Agent/surface catalogs refetch when credentials appear or disappear,
  *       not when the JWT string rotates.
  */
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   ConfigProvider,
   Layout,
@@ -71,13 +72,17 @@ import { useEventBus } from "./hooks/useEventBus";
 import { useConversation } from "./hooks/useConversation";
 import { useMotetChat } from "./hooks/useMotetChat";
 import {
+  autoTitleFromUserText,
+  firstUserMessageText,
   isLegacyTruncatedAutoTitle,
-  shouldFlushAutoTitlePersist,
+  pendingTitlesToFlush,
   shouldQueueAutoTitle,
+  shouldQueueAutoTitleFromSend,
 } from "./hooks/conversationHistoryApply";
 import {
   defaultRagControlsValue,
   resolveAgentDisplayName,
+  sumKnownCostUsd,
   treatsThinkingAsAlwaysOn,
   useRequestContext,
   SignedOutPage,
@@ -96,7 +101,8 @@ import { ChatInputArea } from "./components/ChatInputArea";
 import { ChatThread } from "./components/ChatThread";
 import { AuthModal } from "./components/AuthModal";
 import { RenameModal } from "./components/RenameModal";
-import type { AuthState } from "./types";
+import type { AuthState, CostDisplayPrefs } from "./types";
+import { readCostDisplayPrefs } from "./utils/costDisplay";
 import { storageKey } from "./utils/storageMigration";
 import "./App.css";
 
@@ -122,6 +128,7 @@ type AgentInfo = {
   qualified_id: string;
   display_name?: string;
   allowed_surface_ids?: string[] | null;
+  selectable?: boolean;
 };
 
 type AgentListResponse = {
@@ -212,6 +219,15 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
       return "";
     }
   });
+  // Sidebar list stays on the parent chat agent. The header can show
+  // core.subagent when a spawn child is open without emptying the list.
+  const [listAgentId, setListAgentId] = useState<string>(() => {
+    try {
+      return String(localStorage.getItem(storageKey("agent_id")) || "");
+    } catch {
+      return "";
+    }
+  });
 
   const [selectedSurfaceId, setSelectedSurfaceId] = useState<string>(() => {
     try {
@@ -229,6 +245,7 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
     setConversation,
     handleNewConversation,
     handleConversationChange,
+    openConversation,
     handleRenameConversation,
     handleRenameSubmit,
     handleDeleteConversation,
@@ -243,7 +260,7 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
     updatedTitlesRef,
     refreshConversationList,
   } = useConversation(auth, {
-    agent_id: selectedAgentId || "default",
+    agent_id: listAgentId || "default",
     surface_id: selectedSurfaceId || "demo_chat",
   });
 
@@ -283,6 +300,7 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
   const [inputValue, setInputValue] = useState<string>("");
   const [watchEvents, setWatchEvents] = useState(false);
   const [showErrors, setShowErrors] = useState<boolean>(false);
+  const [costDisplay, setCostDisplay] = useState<CostDisplayPrefs>(readCostDisplayPrefs);
   const [showRagControls, setShowRagControls] = useState<boolean>(false);
   const [siderCollapsed, setSiderCollapsed] = useState<boolean>(false);       // Left sidebar collapse state
   const [rightSiderCollapsed, setRightSiderCollapsed] = useState<boolean>(false); // Right sidebar collapse state
@@ -319,11 +337,11 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
 
   useEffect(() => {
     try {
-      localStorage.setItem(storageKey("agent_id"), selectedAgentId || "");
+      localStorage.setItem(storageKey("agent_id"), listAgentId || "");
     } catch {
       // ignore
     }
-  }, [selectedAgentId]);
+  }, [listAgentId]);
 
   useEffect(() => {
     try {
@@ -332,6 +350,14 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
       // ignore
     }
   }, [selectedSurfaceId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey("cost_display"), JSON.stringify(costDisplay));
+    } catch {
+      // ignore persistence errors
+    }
+  }, [costDisplay]);
 
   // Credential presence only — JWT string rotation must not refetch catalogs.
   const authenticated = isAuthenticated(auth);
@@ -438,13 +464,14 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
 
   // Clear stale selection when current selection is no longer visible/allowed.
   useEffect(() => {
-    if (!selectedAgentId) return;
-    // During initial load availableAgents is often empty; don't clear yet.
     if (availableAgents.length === 0) return;
-    if (!availableAgents.some((a) => a.qualified_id === selectedAgentId)) {
+    if (selectedAgentId && !availableAgents.some((a) => a.qualified_id === selectedAgentId)) {
       setSelectedAgentId("");
     }
-  }, [availableAgents, selectedAgentId]);
+    if (listAgentId && !availableAgents.some((a) => a.qualified_id === listAgentId && a.selectable !== false)) {
+      setListAgentId("");
+    }
+  }, [availableAgents, selectedAgentId, listAgentId]);
 
   // When agent changes, keep surface if allowed; otherwise prefer demo_chat or first allowed.
   useEffect(() => {
@@ -476,9 +503,57 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
   // ─────────────────────────────────────────────────────────────────────────────
   // CHAT LOGIC: Core hook integrating Ant Design X's useXChat with Motet backend.
   // Handles message streaming, throttling, Reasoning Chain extraction, and OAuth prompts.
+  const applyConversationTurnAgent = useCallback(
+    (key: string, turnAgentId?: string | null) => {
+      const fromConv = (
+        conversations as Array<{ key?: string; turn_agent_id?: string }>
+      ).find((c) => c.key === key)?.turn_agent_id;
+      const next = String(turnAgentId || fromConv || "").trim();
+      if (next) {
+        setSelectedAgentId(next);
+        return;
+      }
+      setSelectedAgentId(listAgentId);
+    },
+    [conversations, listAgentId]
+  );
+
+  const openConversationWithTurnAgent = useCallback(
+    (id: string, opts?: { title?: string; agentId?: string }) => {
+      openConversation(id, opts);
+      applyConversationTurnAgent(id, opts?.agentId);
+    },
+    [openConversation, applyConversationTurnAgent]
+  );
+
+  const handleSelectConversation = useCallback(
+    (key: string) => {
+      handleConversationChange(key);
+      applyConversationTurnAgent(key);
+    },
+    [handleConversationChange, applyConversationTurnAgent]
+  );
+
+  const handleNewConversationWithAgent = useCallback(() => {
+    handleNewConversation();
+    setSelectedAgentId(listAgentId);
+  }, [handleNewConversation, listAgentId]);
+
+  const handleSelectHeaderAgent = useCallback(
+    (id: string) => {
+      setSelectedAgentId(id);
+      const agent = availableAgents.find((a) => a.qualified_id === id);
+      if (!id || agent?.selectable !== false) {
+        setListAgentId(id);
+      }
+    },
+    [availableAgents]
+  );
+
   // ─────────────────────────────────────────────────────────────────────────────
   const {
     messages: throttledMessages, // Use throttled messages for UI
+    storeMessages,
     bubbleListItems,
     onRequest,
     isRequesting,
@@ -486,7 +561,9 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
     reasoningPanels,
     thinkingState,
     historyWarning,
+    conversationCostUsd,
     storeReadyKey,
+    inFlightConversationIds,
   } = useMotetChat(
     auth,
     conversationId,
@@ -504,7 +581,13 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
     selectedSurfaceId || "demo_chat",
     availableAgents,
     authorizedMessages,
-    openOAuthPopup
+    openOAuthPopup,
+    openConversationWithTurnAgent,
+    applyConversationTurnAgent
+  );
+  const turnCostUsd = sumKnownCostUsd(reasoningPanels.map((panel) => panel.costUsd));
+  const hasAssistantReply = (throttledMessages as Array<{ role?: string; message?: { role?: string } }>).some(
+    (row) => (row?.message?.role || row?.role) === "assistant"
   );
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -516,24 +599,31 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
    * Other surfaces (e.g. openai_compat) keep the registry default ("New Chat")
    * until the user renames manually.
    *
-   * Sidebar label updates immediately. PATCH waits until the first turn
-   * finishes: "+" ids are local-only until agent_turn claims them, and
-   * conversation_rename returns 403 for unclaimed ids.
+   * Send titles from the outgoing text for that conversation id. Untitled
+   * history hydrates from the unthrottled store only after it belongs to
+   * this chat. PATCH is per id: wait until that conversation has been in
+   * flight (agent_turn claimed it) and is idle. A sibling stream does not
+   * block or overwrite another title.
    */
-  const pendingAutoTitleRef = useRef<{ key: string; title: string } | null>(null);
-  const completedTurnsRef = useRef<Set<string>>(new Set());
-  const inFlightTurnKeysRef = useRef<Set<string>>(new Set());
+  const pendingTitlesRef = useRef<Map<string, string>>(new Map());
+  const seenInFlightRef = useRef<Set<string>>(new Set());
+
+  const applyAutoTitle = (key: string, content: string) => {
+    const currentConv = conversations.find((c: any) => c.key === key);
+    const title = autoTitleFromUserText(content);
+    if (!title) return;
+    if (currentConv) {
+      setConversation(key, { ...currentConv, label: title });
+    }
+    updatedTitlesRef.current.add(key);
+    pendingTitlesRef.current.set(key, title);
+  };
 
   useEffect(() => {
     const surface = (selectedSurfaceId || "demo_chat").trim() || "demo_chat";
     if (surface !== "demo_chat") return;
 
-    const firstUserMsg = throttledMessages.find((msgInfo: any) => {
-      const msg = msgInfo.message || msgInfo;
-      return msg.role === "user";
-    });
-    const msg = firstUserMsg ? (firstUserMsg.message || firstUserMsg) : null;
-    const content = typeof msg?.content === "string" ? msg.content.trim() : "";
+    const content = firstUserMessageText(storeMessages);
     const currentConv = conversations.find((c: any) => c.key === activeConversationKey);
     const canSetNewTitle = shouldQueueAutoTitle({
       storeReadyKey,
@@ -549,16 +639,9 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
     if (!canSetNewTitle && !canExpandLegacyTitle) {
       return;
     }
-
-    const oneLine = content.replace(/\s+/g, " ").trim();
-    const title = oneLine.length > 500 ? oneLine.slice(0, 500) : oneLine;
-    if (currentConv) {
-      setConversation(activeConversationKey, { ...currentConv, label: title });
-    }
-    updatedTitlesRef.current.add(activeConversationKey);
-    pendingAutoTitleRef.current = { key: activeConversationKey, title };
+    applyAutoTitle(activeConversationKey, content);
   }, [
-    throttledMessages,
+    storeMessages,
     activeConversationKey,
     storeReadyKey,
     conversations,
@@ -568,30 +651,21 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
   ]);
 
   useEffect(() => {
-    if (isRequesting) {
-      inFlightTurnKeysRef.current.add(activeConversationKey);
-      return;
+    for (const id of inFlightConversationIds) {
+      seenInFlightRef.current.add(id);
     }
-    for (const key of inFlightTurnKeysRef.current) {
-      completedTurnsRef.current.add(key);
+    const toFlush = pendingTitlesToFlush({
+      pending: pendingTitlesRef.current,
+      inFlightIds: inFlightConversationIds,
+      seenInFlight: seenInFlightRef.current,
+    });
+    if (toFlush.length === 0) return;
+    for (const { key, title } of toFlush) {
+      pendingTitlesRef.current.delete(key);
+      persistConversationTitle(key, title);
     }
-    inFlightTurnKeysRef.current.clear();
-
-    const pending = pendingAutoTitleRef.current;
-    if (
-      !shouldFlushAutoTitlePersist({
-        pendingKey: pending?.key ?? null,
-        turnCompletedForPending: Boolean(
-          pending && completedTurnsRef.current.has(pending.key)
-        ),
-        isRequesting,
-      })
-    ) {
-      return;
-    }
-    pendingAutoTitleRef.current = null;
-    persistConversationTitle(pending!.key, pending!.title);
-  }, [isRequesting, activeConversationKey, persistConversationTitle]);
+    refreshConversationList();
+  }, [inFlightConversationIds, persistConversationTitle, refreshConversationList]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // EVENT HANDLERS
@@ -610,12 +684,28 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
       setShowAuthModal(true);
       return;
     }
+    if (isRequesting) {
+      return;
+    }
 
     const trimmed = String(inputValue || "").trim();
     // Attachments validation is handled in ChatInputArea or here?
     // ChatInputArea checks for "uploading" status.
     // Here we check for empty content.
     if (!trimmed && attachmentList.length === 0) return;
+
+    const surface = (selectedSurfaceId || "demo_chat").trim() || "demo_chat";
+    const currentConv = conversations.find((c: any) => c.key === activeConversationKey);
+    if (
+      surface === "demo_chat" &&
+      shouldQueueAutoTitleFromSend({
+        label: currentConv?.label,
+        alreadyUpdated: updatedTitlesRef.current.has(activeConversationKey),
+        hasUserMessage: Boolean(trimmed),
+      })
+    ) {
+      applyAutoTitle(activeConversationKey, trimmed);
+    }
 
     onRequest({
       messages: [{
@@ -698,9 +788,11 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
           setWatchEvents={setWatchEvents}
           showErrors={showErrors}
           setShowErrors={setShowErrors}
+          costDisplay={costDisplay}
+          onCostDisplayChange={setCostDisplay}
           availableAgents={availableAgents}
           selectedAgentId={selectedAgentId}
-          onSelectAgentId={setSelectedAgentId}
+          onSelectAgentId={handleSelectHeaderAgent}
           availableSurfaces={availableSurfaces}
           selectedSurfaceId={selectedSurfaceId || "demo_chat"}
           onSelectSurfaceId={(surfaceId) => {
@@ -714,9 +806,10 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
             collapsed={siderCollapsed}
             setCollapsed={setSiderCollapsed}
             conversations={conversations}
+            inFlightConversationIds={inFlightConversationIds}
             activeKey={activeConversationKey}
-            onNewConversation={handleNewConversation}
-            onSelectConversation={handleConversationChange}
+            onNewConversation={handleNewConversationWithAgent}
+            onSelectConversation={handleSelectConversation}
             onRenameConversation={handleRenameConversation}
             onDeleteConversation={handleDeleteConversation}
             onDeleteAllConversations={handleDeleteAllConversations}
@@ -802,6 +895,8 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
                   onReasoningEffortChange={(v) => {
                     setOverrides((prev) => ({ ...(prev || {}), reasoning_effort: v || "medium" }));
                   }}
+                  turnCostUsd={costDisplay.turn ? turnCostUsd : null}
+                  conversationCostUsd={costDisplay.conversation ? conversationCostUsd : null}
                   onAttachmentsChange={(info) => {
                     const nextUids = new Set(info.fileList.map((f: any) => f.uid));
                     setDraftUploads((prev) => prev.filter((d) => nextUids.has(d.uid)));
@@ -830,6 +925,9 @@ function AppContent({ darkMode, setDarkMode }: { darkMode: boolean; setDarkMode:
             errors={eventErrors}
             watchEventsEnabled={watchEvents}
             showErrorsEnabled={showErrors}
+            isRequesting={isRequesting}
+            hasAssistantReply={hasAssistantReply}
+            showAgentCost={costDisplay.agent}
           />
         </Layout>
       </Layout>

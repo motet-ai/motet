@@ -5,14 +5,17 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-31
 
 Description:
     Distributed commands for conversation list, get, clear, and register.
     Used by the Conversations API (thin HTTP layer) and callable from CLI or other services.
     Tenant/principal come from MotetContext (set by API when invoking).
     conversation_get returns an optional warning when the conversation index
-    has rows but transcript replay is empty.
+    has rows but transcript replay is empty. conversation_clear also deletes
+    isolated descendants of the conversation (spawn children and
+    isolate_conversation steps), found by merging the lineage children index
+    with the registry's durable parent_conversation_id rows.
 
 Dependencies:
     - conversation_registry (sync): list_conversations_sync, register_or_touch_conversation_sync, remove_conversation_sync
@@ -50,8 +53,13 @@ from motet.core.conversations.ownership import (
     delete_conversation_owner_sync,
     get_conversation_owner_sync,
 )
+from motet.core.conversations.lineage import (
+    forget_conversation_lineage_sync,
+    list_descendant_conversations_sync,
+)
 from motet.core.conversations.registry import (
     list_conversations_sync,
+    list_descendant_conversations_from_registry_sync,
     register_or_touch_conversation_sync,
     remove_conversation_sync,
 )
@@ -79,7 +87,8 @@ def conversations_list(data: ListConversationsData) -> Dict[str, Any]:
     """
     List conversations for the principal in the tenant (from motet context).
     ADR-0083: filters by agent_id and optional surface_id; returns scope fields in each item.
-    Returns list of {id, title, created_at, updated_at, agent_id?, surface_id?} sorted by updated_at desc.
+    Returns list of {id, title, created_at, updated_at, agent_id?, surface_id?,
+    turn_agent_id?, parent_conversation_id?} sorted by updated_at desc.
     """
     motet_id, tenant_id, principal_id = _require_conversation_identity("conversations_list")
     # Resolve agent_id to qualified form so filter matches registry (ADR-0083); None/empty -> core.default.
@@ -108,6 +117,13 @@ def conversation_get(data: GetConversationData) -> Dict[str, Any]:
     stays 0 on this path (no Search).
     History items include attachments (artifact_id, content_type, etc.) when the
     message has media content_parts so the UI can display images and other artifacts.
+    Assistant items may include thinking_text when provider reasoning was stored,
+    tool_summaries (name, status, preview) when tools ran, cost_usd when
+    the loop recorded a priced estimate, and spawn_children when this turn
+    created isolated child conversations. Spawn cards include each child's
+    thinking and tool summaries from the child transcript when the parent
+    pointer omitted them. Isolated children include parent_conversation_id
+    from the registry row.
     """
     motet = get_motet_context()
     motet_id, tenant_id, principal_id = _require_conversation_identity("conversation_get")
@@ -140,10 +156,16 @@ def conversation_get(data: GetConversationData) -> Dict[str, Any]:
         try:
             from motet.core.conversations import load_history
             from motet.core.conversations.transcript_replay import message_to_history_item
+            from motet.core.conversations.children import hydrate_spawn_children
+
             for created_at, msg in load_history(motet, conversation_id, limit=250):
                 item = message_to_history_item(msg, created_at)
-                if item is not None:
-                    hist.append(item)
+                if item is None:
+                    continue
+                kids = item.get("spawn_children")
+                if kids:
+                    item["spawn_children"] = hydrate_spawn_children(motet, kids)
+                hist.append(item)
         except Exception as e:
             logger.debug("recall_conversation_failed", conversation_id=conversation_id, error=str(e))
 
@@ -171,23 +193,81 @@ def conversation_get(data: GetConversationData) -> Dict[str, Any]:
             index_count=mem["memory"],
         )
 
+    turn_agent_id = None
+    parent_conversation_id = None
+    try:
+        from motet.core.conversations.registry import get_conversation_sync
+
+        row = get_conversation_sync(motet_id, tenant_id, principal_id, conversation_id)
+        if isinstance(row, dict):
+            turn_agent_id = str(row.get("turn_agent_id") or "").strip() or None
+            parent_conversation_id = str(row.get("parent_conversation_id") or "").strip() or None
+    except Exception as e:
+        logger.debug("conversation_registry_lookup_failed", conversation_id=conversation_id, error=str(e))
+
     return {
         "conversation_id": conversation_id,
         "history": hist,
         "counts": mem,
         "summary": None,
         "warning": warning,
+        "turn_agent_id": turn_agent_id,
+        "parent_conversation_id": parent_conversation_id,
     }
 
 
+def _clear_one_conversation(
+    motet: Any,
+    *,
+    motet_id: str,
+    tenant_id: str,
+    principal_id: str,
+    conversation_id: str,
+) -> Dict[str, int]:
+    """Registry, ownership, scoped memory/vector, and lineage rows for one id."""
+    remove_conversation_sync(
+        motet_id=motet_id,
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        conversation_id=conversation_id,
+    )
+    delete_conversation_owner_sync(motet_id, tenant_id, conversation_id)
+
+    cleared = {"memory": 0, "vector": 0}
+    stack = motet.stack if motet else None
+    if stack:
+        from motet.core.memory.constants import CONVERSATION_SCOPE_TAG_PREFIX
+
+        conv_tag = f"{CONVERSATION_SCOPE_TAG_PREFIX}{conversation_id}"
+        try:
+            if getattr(stack, "memory", None):
+                cleared["memory"] = stack.memory.clear_by_tag(conv_tag)  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.warning("clear_memory_failed", conversation_id=conversation_id, error=str(e))
+        try:
+            if getattr(stack, "vector", None):
+                cleared["vector"] = stack.vector.delete_by_tag(conv_tag)  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.warning("clear_vector_failed", conversation_id=conversation_id, error=str(e))
+
+    forget_conversation_lineage_sync(tenant_id=tenant_id, conversation_id=conversation_id)
+    return cleared
+
+
 @motet.command(
-    description="Delete a conversation: remove it from the registry and clear its scoped memory and vector entries.",
+    description=(
+        "Delete a conversation and its isolated descendants: remove registry "
+        "rows and clear scoped memory and vector entries."
+    ),
     timeout_seconds=30,
     required_capabilities=[WorkerCapability.MEMORY_OPERATIONS],
 )
 def conversation_clear(data: ClearConversationData) -> Dict[str, Any]:
     """
-    Clear a conversation: remove from registry and clear memory/vector by conversation-scope tag.
+    Clear a conversation and isolated descendants (spawn children,
+    isolate_conversation steps). In-thread panelists share this id and
+    go away with its scoped memory. Deleting a child does not delete
+    its parent or siblings.
     """
     motet = get_motet_context()
     conversation_id = data.conversation_id
@@ -202,31 +282,70 @@ def conversation_clear(data: ClearConversationData) -> Dict[str, Any]:
         bind_if_unclaimed=False,
     )
 
-    remove_conversation_sync(
+    # Merge the lineage index (fast, 30-day TTL) with the durable registry
+    # parent pointers so children still cascade after the index expires.
+    descendant_ids = sorted(
+        set(
+            list_descendant_conversations_sync(
+                tenant_id=tenant_id,
+                conversation_id=conversation_id,
+            )
+        )
+        | set(
+            list_descendant_conversations_from_registry_sync(
+                motet_id,
+                tenant_id,
+                principal_id,
+                conversation_id,
+            )
+        )
+    )
+    child_ids: List[str] = []
+    for child_id in descendant_ids:
+        try:
+            authorize_conversation_access_sync(
+                motet_id=motet_id,
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                conversation_id=child_id,
+                bind_if_unclaimed=False,
+            )
+        except ConversationAccessDenied:
+            logger.warning(
+                "conversation_clear_child_skipped",
+                conversation_id=conversation_id,
+                child_conversation_id=child_id,
+            )
+            continue
+        child_ids.append(child_id)
+
+    cleared = {"memory": 0, "vector": 0}
+    for child_id in child_ids:
+        part = _clear_one_conversation(
+            motet,
+            motet_id=motet_id,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            conversation_id=child_id,
+        )
+        cleared["memory"] += int(part.get("memory") or 0)
+        cleared["vector"] += int(part.get("vector") or 0)
+
+    part = _clear_one_conversation(
+        motet,
         motet_id=motet_id,
         tenant_id=tenant_id,
         principal_id=principal_id,
         conversation_id=conversation_id,
     )
-    delete_conversation_owner_sync(motet_id, tenant_id, conversation_id)
+    cleared["memory"] += int(part.get("memory") or 0)
+    cleared["vector"] += int(part.get("vector") or 0)
 
-    cleared = {"memory": 0, "vector": 0}
-    stack = motet.stack if motet else None
-    if stack:
-        from motet.core.memory.constants import CONVERSATION_SCOPE_TAG_PREFIX
-        conv_tag = f"{CONVERSATION_SCOPE_TAG_PREFIX}{conversation_id}"
-        try:
-            if getattr(stack, "memory", None):
-                cleared["memory"] = stack.memory.clear_by_tag(conv_tag)  # type: ignore[attr-defined]
-        except Exception as e:
-            logger.warning("clear_memory_failed", conversation_id=conversation_id, error=str(e))
-        try:
-            if getattr(stack, "vector", None):
-                cleared["vector"] = stack.vector.delete_by_tag(conv_tag)  # type: ignore[attr-defined]
-        except Exception as e:
-            logger.warning("clear_vector_failed", conversation_id=conversation_id, error=str(e))
-
-    return {"conversation_id": conversation_id, "cleared": cleared}
+    return {
+        "conversation_id": conversation_id,
+        "cleared": cleared,
+        "child_conversation_ids": child_ids,
+    }
 
 
 @motet.command(

@@ -5,12 +5,14 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-31
 
 Description:
     Redis-backed registry of conversations per (motet_id, tenant_id, principal_id) for the
     Conversations API. Enables listing, creating, updating, and removing conversation
-    metadata (id, title, created_at, updated_at, agent_id, surface_id) so the chat UI
+    metadata (id, title, created_at, updated_at, agent_id, surface_id,
+    parent_conversation_id, root_conversation_id, optional turn_agent_id
+    and spawn_contract) so the chat UI
     can restore the conversation list on page refresh. Uses motet_id
     for isolation across deployment environments (e.g. production vs staging), consistent
     with memory. Supports agent and surface scoping for list filtering.
@@ -35,6 +37,11 @@ Notes:
       {tenant}:imf:conv:… and pre-Phase-2 imf:conv:… keys are not dual-read.
     - Conversations stored as JSON list; sorted by updated_at desc when listing.
     - agent_id/surface_id set on create, backfilled on touch if missing.
+    - turn_agent_id / spawn_contract are optional child-follow-up fields;
+      also backfilled on touch when missing.
+    - list_descendant_conversations_from_registry_sync walks the durable
+      parent_conversation_id rows; conversation delete merges it with the
+      TTL-bound lineage index so old children still cascade.
 """
 
 from __future__ import annotations
@@ -344,6 +351,14 @@ def list_conversations_sync(
         return []
 
 
+def _backfill_registry_field(entry: Dict[str, Any], key: str, value: Any) -> None:
+    """Set *key* on create or when the existing row is missing it."""
+    if value is None:
+        return
+    if not entry.get(key):
+        entry[key] = value
+
+
 def register_or_touch_conversation_sync(
     motet_id: str,
     tenant_id: str,
@@ -352,6 +367,10 @@ def register_or_touch_conversation_sync(
     title: Optional[str] = None,
     agent_id: Optional[str] = None,
     surface_id: Optional[str] = None,
+    parent_conversation_id: Optional[str] = None,
+    root_conversation_id: Optional[str] = None,
+    turn_agent_id: Optional[str] = None,
+    spawn_contract: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Sync version: register or touch a conversation. Backfills agent_id/surface_id on touch if missing (ADR-0083)."""
     key = _registry_key(motet_id, tenant_id, principal_id)
@@ -366,10 +385,12 @@ def register_or_touch_conversation_sync(
             c["updated_at"] = now
             if title is not None:
                 c["title"] = title
-            if agent_id is not None and not c.get("agent_id"):
-                c["agent_id"] = agent_id
-            if surface_id is not None and not c.get("surface_id"):
-                c["surface_id"] = surface_id
+            _backfill_registry_field(c, "agent_id", agent_id)
+            _backfill_registry_field(c, "surface_id", surface_id)
+            _backfill_registry_field(c, "parent_conversation_id", parent_conversation_id)
+            _backfill_registry_field(c, "root_conversation_id", root_conversation_id)
+            _backfill_registry_field(c, "turn_agent_id", turn_agent_id)
+            _backfill_registry_field(c, "spawn_contract", spawn_contract)
             found = True
             break
     if not found:
@@ -379,10 +400,12 @@ def register_or_touch_conversation_sync(
             "created_at": now,
             "updated_at": now,
         }
-        if agent_id is not None:
-            entry["agent_id"] = agent_id
-        if surface_id is not None:
-            entry["surface_id"] = surface_id
+        _backfill_registry_field(entry, "agent_id", agent_id)
+        _backfill_registry_field(entry, "surface_id", surface_id)
+        _backfill_registry_field(entry, "parent_conversation_id", parent_conversation_id)
+        _backfill_registry_field(entry, "root_conversation_id", root_conversation_id)
+        _backfill_registry_field(entry, "turn_agent_id", turn_agent_id)
+        _backfill_registry_field(entry, "spawn_contract", spawn_contract)
         convs.append(entry)
     store_structured_data_sync(
         REGISTRY_CLIENT_ID,
@@ -446,3 +469,87 @@ def has_conversation_sync(
     if not isinstance(convs, list):
         return False
     return any(isinstance(c, dict) and c.get("id") == cid for c in convs)
+
+
+#: Cap when walking registry descendants (cycle / corrupt parent pointers).
+_MAX_REGISTRY_DESCENDANT_DEPTH = 16
+
+
+def list_descendant_conversations_from_registry_sync(
+    motet_id: str,
+    tenant_id: str,
+    principal_id: str,
+    conversation_id: str,
+) -> List[str]:
+    """
+    Descendant conversation ids from registry ``parent_conversation_id`` rows.
+
+    The registry row is durable, so this walk still finds children after the
+    lineage index TTL has expired. Does not include ``conversation_id``
+    itself. Best-effort: returns [] on failure or when nothing points here.
+    """
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+    try:
+        raw = _load_registry_sync(motet_id, tenant_id, principal_id)
+    except Exception as e:
+        logger.warning(
+            "conversation_registry_descendants_failed",
+            conversation_id=cid,
+            error=str(e),
+        )
+        return []
+    convs = (raw or {}).get("conversations") or []
+    if not isinstance(convs, list):
+        return []
+    children_by_parent: Dict[str, List[str]] = {}
+    for row in convs:
+        if not isinstance(row, dict):
+            continue
+        child_id = str(row.get("id") or "").strip()
+        parent_id = str(row.get("parent_conversation_id") or "").strip()
+        if child_id and parent_id:
+            children_by_parent.setdefault(parent_id, []).append(child_id)
+    seen: set[str] = set()
+    out: List[str] = []
+    queue: List[tuple[str, int]] = [(cid, 0)]
+    while queue:
+        current, depth = queue.pop(0)
+        if depth >= _MAX_REGISTRY_DESCENDANT_DEPTH:
+            continue
+        for child_id in children_by_parent.get(current, []):
+            if child_id == cid or child_id in seen:
+                continue
+            seen.add(child_id)
+            out.append(child_id)
+            queue.append((child_id, depth + 1))
+    return sorted(out)
+
+
+def get_conversation_sync(
+    motet_id: str,
+    tenant_id: str,
+    principal_id: str,
+    conversation_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Return one registry row, or None. Unfiltered by agent or surface."""
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return None
+    try:
+        raw = _load_registry_sync(motet_id, tenant_id, principal_id)
+    except Exception as e:
+        logger.warning(
+            "conversation_registry_get_failed",
+            conversation_id=cid,
+            error=str(e),
+        )
+        return None
+    convs = (raw or {}).get("conversations") or []
+    if not isinstance(convs, list):
+        return None
+    for row in convs:
+        if isinstance(row, dict) and row.get("id") == cid:
+            return row
+    return None

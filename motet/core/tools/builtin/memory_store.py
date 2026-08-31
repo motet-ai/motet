@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-21
+Last Modified: 2026-08-31
 
 Description:
     Agent-facing memory write tool. Persists an explicit "remember this" note
@@ -110,6 +110,9 @@ def run(params: Dict[str, Any]) -> Dict[str, Any]:
     memory_type = parsed.type
     tags = list(parsed.tags or [])
     metadata = dict(parsed.metadata or {})
+    # metadata["conversation_id"] overrides where the manager files the row;
+    # that override is for trusted internal writers, not LLM tool params.
+    metadata.pop("conversation_id", None)
     if parsed.importance:
         metadata["importance"] = parsed.importance
     persist = parsed.persist

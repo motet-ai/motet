@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-30
  *
  * Description:
  *     Shared utility functions for Motet UI components.
@@ -17,22 +17,48 @@
  *     import { randomId, debugLog, parseSseBuffer } from "@motet/ui-common/utils";
  */
 
-import type { SSEvent } from "../types";
-
 // Agent display utilities
 export { shortAgentLabel, resolveAgentDisplayName, isSpawnAgentId, spawnAgentOrdinal } from "./agents";
 export type { AgentRegistryEntry } from "./agents";
 export {
   assistantTurnSlices,
   assistantTranscriptTurnSlice,
+  asSpawnChildCards,
   groupTranscriptAssistantTurns,
   resolvePrimaryAgentKey,
   resolveTranscriptPrimaryAgentKey,
+  spawnCardsForTurn,
+  peerSpeakerSlices,
+  spawnAgentKeyForChildConversation,
+  projectLiveSpawnChildMessage,
+  resolveDisplayedLiveMessage,
 } from "./assistantTurn";
+export {
+  LiveTurnRegistry,
+  chatOutputConversationId,
+  isRenderableLiveMessage,
+  shouldClearLiveTurn,
+  shouldKeepLiveStreamOverHistory,
+  tagChatOutputConversation,
+} from "./liveTurns";
+export type { LiveTurn } from "./liveTurns";
+export { consumeChatSse, parseSseBuffer } from "./chatSse";
 export type { AssistantTurnSlice, TranscriptHistoryMessage } from "./assistantTurn";
 
 // Execution status formatting
-export { formatExecutionStatusLine } from "./formatting";
+export {
+  formatCostUsd,
+  formatExecutionStatusLine,
+  groupToolSummariesIntoSteps,
+  isConductorSidebarThought,
+  knownCostUsd,
+  positiveLoopStep,
+  stepsFromAgentStreamSlice,
+  sumKnownCostUsd,
+  toolExecutionsToSummaries,
+  toolSummaryStatusLines,
+} from "./formatting";
+export type { ToolSummaryRow } from "./formatting";
 export { CORE_NAMESPACE, namespaceFromQualifiedName, qualifyWithCoreNamespace } from "./namespacing";
 
 // Thinking / reasoning helpers (always-on models such as Kimi K3)
@@ -68,41 +94,3 @@ export const debugLog = (...args: any[]) => {
   }
 };
 
-/**
- * Parses a Server-Sent Events (SSE) formatted buffer into structured events.
- *
- * @param buffer - Raw SSE text buffer (may contain multiple events)
- * @returns Array of parsed SSEvent objects
- */
-export function parseSseBuffer(buffer: string): SSEvent[] {
-  const out: SSEvent[] = [];
-  const blocks = buffer.split("\n\n");
-
-  for (const block of blocks) {
-    if (!block.trim()) continue;
-
-    const lines = block.split("\n");
-    let evt = "message";
-    const dataLines: string[] = [];
-
-    for (const line of lines) {
-      if (line.startsWith("event:")) {
-        evt = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trim());
-      }
-    }
-
-    const dataRaw = dataLines.join("\n");
-    let data: any = dataRaw;
-    try {
-      data = dataRaw ? JSON.parse(dataRaw) : dataRaw;
-    } catch {
-      data = dataRaw;
-    }
-
-    out.push({ event: evt, data });
-  }
-
-  return out;
-}

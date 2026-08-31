@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Orchestration-owned resume entry for suspended agent turns (GitHub issue #147).
@@ -133,7 +133,14 @@ def resume_agent_turn(data: ResumeAgentTurnData) -> Dict[str, Any]:
         TurnResultKind,
         coerce_turn_result,
     )
-    from motet.core.orchestration.turn.complete import complete_agent_turn, extract_response_text
+    from motet.core.orchestration.turn.complete import (
+        complete_agent_turn,
+        extract_response_text,
+        extract_thinking_text,
+        extract_tool_summaries,
+        extract_spawn_children,
+        extract_turn_cost,
+    )
     from motet.core.orchestration.turn.outcome import apply_turn_outcome_gate, classify_loop_outcome
 
     motet = get_motet_context()
@@ -182,6 +189,10 @@ def resume_agent_turn(data: ResumeAgentTurnData) -> Dict[str, Any]:
             final_response=assistant_response,
             parent_command_id=parent_command_id,
             update_memory=False,
+            thinking_text=extract_thinking_text(loop_result),
+            tool_summaries=extract_tool_summaries(loop_result),
+            cost_usd=extract_turn_cost(loop_result),
+            spawn_children=extract_spawn_children(loop_result),
         )
 
     outcome = classify_loop_outcome(loop_result)
@@ -218,6 +229,10 @@ def resume_agent_turn(data: ResumeAgentTurnData) -> Dict[str, Any]:
             final_response=final_response,
             parent_command_id=parent_command_id,
             update_memory=True,
+            thinking_text=extract_thinking_text(loop_result),
+            tool_summaries=extract_tool_summaries(loop_result),
+            cost_usd=extract_turn_cost(loop_result),
+            spawn_children=extract_spawn_children(loop_result),
         )
 
     response = complete_agent_turn(
@@ -369,6 +384,10 @@ def _finalize_resume(
     final_response: str,
     parent_command_id: Optional[str],
     update_memory: bool,
+    thinking_text: Optional[str] = None,
+    tool_summaries: Optional[List[Any]] = None,
+    cost_usd: Optional[float] = None,
+    spawn_children: Optional[List[Any]] = None,
 ) -> None:
     """Run the owning agent's finalize_turn hook (same policy as agent_turn).
 
@@ -415,6 +434,10 @@ def _finalize_resume(
                 update_memory=update_memory,
                 root_turn=finalize_root_turn,
                 root_agent_id=finalize_root_agent_id,
+                thinking_text=thinking_text,
+                tool_summaries=tool_summaries,
+                cost_usd=cost_usd,
+                spawn_children=spawn_children,
             ),
         )
         if fin_error:

@@ -120,6 +120,44 @@ def test_memory_manager_store_with_explicit_context_succeeds():
     assert stored.motet_id == "motet-1"
 
 
+def test_memory_manager_store_metadata_conversation_id_overrides_context():
+    """Explicit metadata conversation_id files the item on that conversation.
+
+    spawn_agents writes a child's brief/reply from the parent's tool context;
+    the item must be indexed and tagged under the child id, not the parent's.
+    """
+
+    class _Mem:
+        def __init__(self) -> None:
+            self.items = []
+
+        def upsert(self, item):
+            self.items.append(item)
+
+    mem = _Mem()
+    manager = MemoryManager(SimpleNamespace(memory=mem, vector=None, config=None))
+    ctx = SimpleNamespace(
+        principal_id="user-1",
+        tenant_id="tenant-1",
+        motet_id="motet-1",
+        conversation_id="parent-conv",
+    )
+
+    result = manager.store_memory(
+        content="child turn",
+        type="conversation_transcript",
+        tags=["conversation:iso-child"],
+        metadata={"conversation_id": "iso-child"},
+        motet_context=ctx,
+    )
+
+    assert result.get("id")
+    stored = mem.items[0]
+    assert stored.conversation_id == "iso-child"
+    assert "conversation:iso-child" in (stored.tags or [])
+    assert "conversation:parent-conv" not in (stored.tags or [])
+
+
 def test_hybrid_retrieve_does_not_implicitly_scope_vector_to_conversation():
     """Vector branch must not inject identity conversation_id unless caller asked."""
 

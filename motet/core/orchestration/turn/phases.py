@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-29
 
 Description:
     The distributed commands that surround an agent turn, each a phase the turn
@@ -259,6 +259,10 @@ def finalize_turn(data: FinalizeTurnData) -> Dict[str, Any]:
                 root_agent_id=data.root_agent_id,
                 transcript_sequence=data.transcript_sequence,
                 pending_action_carry=data.pending_action_carry,
+                thinking_text=data.thinking_text,
+                tool_summaries=data.tool_summaries,
+                cost_usd=data.cost_usd,
+                spawn_children=data.spawn_children,
             )
             results.update(store_result)
         except Exception as e:

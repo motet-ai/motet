@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Read-only admin tools used by the Motet Admin Persona.
@@ -491,8 +491,8 @@ class AdminConversationCostParams(BaseModel):
     include_children: bool = Field(
         default=False,
         description=(
-            "Also sum totals for child conversation_ids "
-            "({parent}__suffix), e.g. isolate_conversation workflow chunks"
+            "Also sum totals for isolated child conversation_ids "
+            "(workflow isolate_conversation and spawn children)"
         ),
     )
 
@@ -663,7 +663,7 @@ def register(registry: ToolRegistry) -> None:
         name="motet_admin.get_conversation_cost",
         description=(
             "Read exact running cost totals for one conversation_id "
-            "(optional include_children for {parent}__* isolate IDs)."
+            "(optional include_children for isolated child conversation ids)."
         ),
         func=run_get_conversation_cost,
         tool_schema=AdminConversationCostParams,

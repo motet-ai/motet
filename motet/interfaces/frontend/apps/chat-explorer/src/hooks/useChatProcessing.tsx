@@ -5,20 +5,31 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-05
+ * Last Modified: 2026-08-30
  *
  * Description:
  *     Processes streaming chat message metadata into Reasoning sidebar panels.
- *     When SSE frames include agent_id, reasoning/thinking/steps are
+ *     When SSE frames include agent_id, reasoning/steps are
  *     accumulated per qualified agent id; otherwise a single __default__ bucket is used.
+ *     Tool and workflow status lines update in place (executing → completed).
  *
  * Dependencies:
  *     - react: useState, useRef, useEffect
  *     - @ant-design/x: ThoughtChainItemType
  *
  * Notes:
- *     - Per-agent accumulators reset on new user turn and on conversation switch
+ *     - Per-conversation accumulators: switching chats saves and restores
+ *       the live Step N grouping instead of replaying a flat tool list
+ *     - Panels come from this conversation's message streams only — leftover
+ *       accumulators from another chat are not listed
+ *     - After a switch, rebuild steps from toolSummaries or live toolExecutions
+ *     - Thinking stays in the chat bubble (parent) or spawn card (child);
+ *       the parent rail never renders Think. An agent is listed when
+ *       thinking starts, when it has tool or workflow steps, or when a
+ *       priced cost arrives. Thinking text stays in the bubble or card.
  *     - Final meta frame must merge into accumulators before building panels
+ *     - Tool/workflow status upserts by identity so completed replaces executing
+ *     - Sidebar steps are newest-first (live and restored)
  */
 import { useState, useRef, useEffect } from "react";
 import { type ThoughtChainItemType } from "@ant-design/x";
@@ -30,7 +41,12 @@ import {
   DEFAULT_STREAM_AGENT_KEY,
   resolveAgentDisplayName,
   formatExecutionStatusLine,
+  stepsFromAgentStreamSlice,
+  isConductorSidebarThought,
+  knownCostUsd,
+  positiveLoopStep,
 } from "@motet/ui-common";
+import { includeReasoningPanel, sliceHasThinking, sliceIsThinkingActive } from "./reasoningPanelInclude";
 
 /**
  * Superset shape of the SDK's opaque message-info objects.
@@ -49,16 +65,15 @@ type MsgInfo = {
   };
 };
 
+type LineSlot = { stepNum: number; line: string };
+
 type PerAgentAccum = {
   stepLines: Map<number, string[]>;
   stepLineSets: Map<number, Set<string>>;
   currentStep: number | null;
-  processedReasoningStepsRef: Set<string>;
-  reasoningStepsRef: Map<string, ReasoningStepEvent>;
-  workflowStepsRef: Map<string, WorkflowStepEvent>;
-  fallbackStepsRef: Map<string, unknown>;
-  processedToolExecutionsRef: Set<string>;
-  processedWorkflowStepsRef: Set<string>;
+  processedReasoningSteps: Set<string>;
+  /** Tool/workflow identity → current status line (completed replaces executing). */
+  lineBySlot: Map<string, LineSlot>;
 };
 
 function createEmptyAccum(): PerAgentAccum {
@@ -66,13 +81,60 @@ function createEmptyAccum(): PerAgentAccum {
     stepLines: new Map(),
     stepLineSets: new Map(),
     currentStep: null,
-    processedReasoningStepsRef: new Set(),
-    reasoningStepsRef: new Map(),
-    workflowStepsRef: new Map(),
-    fallbackStepsRef: new Map(),
-    processedToolExecutionsRef: new Set(),
-    processedWorkflowStepsRef: new Set()
+    processedReasoningSteps: new Set(),
+    lineBySlot: new Map(),
   };
+}
+
+function appendStepLine(accum: PerAgentAccum, stepNum: number, line: string): void {
+  const trimmed = (line || "").trim();
+  if (!trimmed) return;
+  const seen = accum.stepLineSets.get(stepNum);
+  if (seen?.has(trimmed)) return;
+  if (!seen) accum.stepLineSets.set(stepNum, new Set([trimmed]));
+  else seen.add(trimmed);
+  accum.stepLines.set(stepNum, [...(accum.stepLines.get(stepNum) || []), trimmed]);
+}
+
+function upsertStepLine(
+  accum: PerAgentAccum,
+  stepNum: number,
+  slotKey: string,
+  line: string
+): void {
+  const trimmed = (line || "").trim();
+  if (!trimmed) return;
+  const existing = accum.lineBySlot.get(slotKey);
+  if (existing?.line === trimmed) return;
+  if (existing) {
+    const lines = accum.stepLines.get(existing.stepNum) || [];
+    const idx = lines.lastIndexOf(existing.line);
+    if (idx >= 0) {
+      const next = [...lines];
+      next[idx] = trimmed;
+      accum.stepLines.set(existing.stepNum, next);
+      const seen = accum.stepLineSets.get(existing.stepNum);
+      if (seen) {
+        seen.delete(existing.line);
+        seen.add(trimmed);
+      }
+      accum.lineBySlot.set(slotKey, { stepNum: existing.stepNum, line: trimmed });
+      return;
+    }
+  }
+  appendStepLine(accum, stepNum, trimmed);
+  accum.lineBySlot.set(slotKey, { stepNum, line: trimmed });
+}
+
+function applyStatusLine(
+  accum: PerAgentAccum,
+  slotKey: string,
+  name: string,
+  status: string,
+  opts: { durationMs?: number; error?: string; stepNum?: number } = {}
+): void {
+  const line = formatExecutionStatusLine(name, status, opts);
+  if (line) upsertStepLine(accum, opts.stepNum ?? accum.currentStep ?? 1, slotKey, line);
 }
 
 /** Extract per-agent stream map from message meta. */
@@ -82,6 +144,26 @@ function streamsFromMeta(meta: Record<string, unknown> | undefined): Record<stri
     return raw;
   }
   return { [DEFAULT_STREAM_AGENT_KEY]: {} };
+}
+
+function thoughtChainItemsFromSteps(
+  aid: string,
+  steps: Array<{ step: number; lines: string[] }>,
+  activeStep: number | null = null,
+  thinkingActive = false
+): ThoughtChainItemType[] {
+  return [...steps]
+    .sort((a, b) => b.step - a.step)
+    .map(({ step, lines }) => ({
+      key: `${aid}:step:${step}`,
+      title: `Step ${step}:`,
+      description: lines.map((line, idx) => (
+        <div key={`${aid}:${step}:${idx}`}>{line}</div>
+      )),
+      // A live think must not flip the step to loading — ThoughtChain
+      // replaces the description with a spinner when status is loading.
+      status: !thinkingActive && activeStep === step ? "loading" : "success",
+    }));
 }
 
 /**
@@ -96,84 +178,115 @@ function applySliceToAccum(
 ): void {
   const accum = getOrCreateAccum(aid);
 
-  const addLine = (stepNum: number, line: string) => {
-    const trimmed = (line || "").trim();
-    if (!trimmed) return;
-    const seen = accum.stepLineSets.get(stepNum);
-    if (seen?.has(trimmed)) return;
-    if (!seen) accum.stepLineSets.set(stepNum, new Set([trimmed]));
-    else seen.add(trimmed);
-    const prev = accum.stepLines.get(stepNum) || [];
-    accum.stepLines.set(stepNum, [...prev, trimmed]);
-  };
-
   if (slice.reasoning_step) {
     const rs = slice.reasoning_step as ReasoningStepEvent;
     const rsSig = JSON.stringify(rs);
     const rsKey = typeof rs?.step === "number" ? `reasoning:${rs.step}:${rsSig}` : `reasoning:auto:${rsSig}`;
-    if (!accum.processedReasoningStepsRef.has(rsKey)) {
-      accum.processedReasoningStepsRef.add(rsKey);
-      const stepNum = typeof rs?.step === "number" ? rs.step : undefined;
-      const resolvedStep = stepNum != null ? stepNum : (accum.currentStep ?? 0) + 1;
+    if (!accum.processedReasoningSteps.has(rsKey)) {
+      accum.processedReasoningSteps.add(rsKey);
+      const stepNum = positiveLoopStep(rs?.step);
+      const resolvedStep = stepNum ?? (accum.currentStep ?? 0) + 1;
       accum.currentStep = resolvedStep;
-      accum.reasoningStepsRef.set(`reasoning:${resolvedStep}`, rs);
-      if (rs?.thought) {
-        addLine(resolvedStep, rs.thought);
+      if (rs?.thought && !isConductorSidebarThought(rs.thought)) {
+        appendStepLine(accum, resolvedStep, rs.thought);
       }
     }
   }
 
   if (slice.workflow_step) {
     const ws = slice.workflow_step as WorkflowStepEvent;
-    const traceId = ws?.trace_id;
-    const wfKey = ws?.step_id
-      ? `workflow:${ws.step_id}`
-      : traceId
-        ? `workflow:${traceId}`
-        : `workflow:${JSON.stringify(ws)}`;
-    accum.workflowStepsRef.set(wfKey, ws);
-    const stepId = ws?.step_id || ws?.step_name || wfKey;
-    const status = (ws?.status || "").toLowerCase();
-    const wsKey = `${stepId}:${status}`;
-    if (!accum.processedWorkflowStepsRef.has(wsKey)) {
-      accum.processedWorkflowStepsRef.add(wsKey);
-      const line = formatExecutionStatusLine(
-        ws?.step_name || ws?.command_type || "workflow_step",
-        status,
-        { durationMs: ws?.duration_ms, error: ws?.error }
-      );
-      if (line) addLine(accum.currentStep ?? 1, line);
-    }
+    const stepId = ws?.step_id || ws?.step_name || ws?.trace_id || "workflow";
+    applyStatusLine(
+      accum,
+      `workflow:${stepId}`,
+      ws?.step_name || ws?.command_type || "workflow_step",
+      (ws?.status || "").toLowerCase(),
+      { durationMs: ws?.duration_ms, error: ws?.error }
+    );
   }
 
   if (slice.toolExecutions && Array.isArray(slice.toolExecutions)) {
     for (const toolExec of slice.toolExecutions) {
       const toolName = toolExec?.toolName || "unknown tool";
-      const status = toolExec?.status || "";
-      const execKey = `${toolExec?.toolCallId || toolName}:${status}`;
-      if (accum.processedToolExecutionsRef.has(execKey)) continue;
-      const line = formatExecutionStatusLine(toolName, status, {
-        durationMs: toolExec?.durationMs,
-        error: toolExec?.error,
-      });
-      if (line) {
-        accum.processedToolExecutionsRef.add(execKey);
-        addLine(accum.currentStep ?? 1, line);
-      }
+      applyStatusLine(
+        accum,
+        `tool:${toolExec?.toolCallId || toolName}`,
+        toolName,
+        toolExec?.status || "",
+        {
+          durationMs: toolExec?.durationMs,
+          error: toolExec?.error,
+          stepNum: positiveLoopStep(toolExec?.step),
+        }
+      );
     }
   }
 
   if (slice.step !== undefined) {
-    const key = `step:${JSON.stringify(slice.step)}`;
-    accum.fallbackStepsRef.set(key, slice.step);
-    addLine(accum.currentStep ?? 1, `Step event: ${JSON.stringify(slice.step)}`);
+    appendStepLine(accum, accum.currentStep ?? 1, `Step event: ${JSON.stringify(slice.step)}`);
   }
+}
+
+type ConvProcessState = {
+  byAgent: Map<string, PerAgentAccum>;
+  activeAssistantMsgId: string | null;
+  lastUserTurnKey: string | null;
+};
+
+function unwrapMsg(raw: unknown): { info: MsgInfo; msg: NonNullable<MsgInfo["message"]> } {
+  const info = raw as MsgInfo;
+  return { info, msg: (info?.message || info) as NonNullable<MsgInfo["message"]> };
+}
+
+function findLastMessage(
+  messages: unknown[],
+  match: (info: MsgInfo, msg: NonNullable<MsgInfo["message"]>) => boolean
+): MsgInfo | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const { info, msg } = unwrapMsg(messages[i]);
+    if (match(info, msg)) return info;
+  }
+  return undefined;
+}
+
+function isStreamingStatus(status: unknown): boolean {
+  return status === "updating" || status === "loading";
+}
+
+function stepsFromAccum(accum: PerAgentAccum): Array<{ step: number; lines: string[] }> {
+  return Array.from(accum.stepLines.entries()).map(([step, lines]) => ({ step, lines }));
+}
+
+function panelForAgent(
+  aid: string,
+  slice: AgentStreamSlice,
+  steps: Array<{ step: number; lines: string[] }>,
+  agents: Array<{ qualified_id: string; display_name?: string }>,
+  liveActive: number | null = null,
+  turnLive = false
+): AgentReasoningPanel {
+  const { agentName, displayLabel } = resolveAgentDisplayName(aid, agents);
+  const thinkingActive = sliceIsThinkingActive(slice, turnLive);
+  const fromAccum = steps.some((step) => step.lines.length > 0);
+  const panelSteps = fromAccum ? steps : stepsFromAgentStreamSlice(slice);
+  return {
+    agentKey: aid,
+    displayLabel,
+    agentName,
+    thoughtChainItems: thoughtChainItemsFromSteps(aid, panelSteps, liveActive, thinkingActive),
+    thinkingText: null,
+    thinkingComplete: !thinkingActive,
+    thinkingStarted: sliceHasThinking(slice),
+    thinkingActive,
+    costUsd: knownCostUsd(slice.costUsd),
+  };
 }
 
 export function useChatProcessing(
   throttledMessages: unknown[],
   activeConversationKey: string,
-  availableAgents: Array<{ qualified_id: string; display_name?: string }> = []
+  availableAgents: Array<{ qualified_id: string; display_name?: string }> = [],
+  storeReadyKey: string | null = null
 ): {
   reasoningPanels: AgentReasoningPanel[];
   thinkingState: string | null;
@@ -181,9 +294,11 @@ export function useChatProcessing(
   const [reasoningPanels, setReasoningPanels] = useState<AgentReasoningPanel[]>([]);
   const [thinkingState, setThinkingState] = useState<string | null>(null);
 
+  const stateByConvRef = useRef<Map<string, ConvProcessState>>(new Map());
   const byAgentAccumRef = useRef<Map<string, PerAgentAccum>>(new Map());
   const activeAssistantMsgIdRef = useRef<string | null>(null);
   const lastUserTurnKeyRef = useRef<string | null>(null);
+  const lastConversationKeyRef = useRef<string | null>(null);
   const availableAgentsRef = useRef(availableAgents);
   availableAgentsRef.current = availableAgents;
 
@@ -196,82 +311,118 @@ export function useChatProcessing(
   }
 
   useEffect(() => {
-    let latestUserInfo: MsgInfo | null = null;
-    let latestUserIdx = -1;
-    for (let i = throttledMessages.length - 1; i >= 0; i -= 1) {
-      const msgInfo = throttledMessages[i] as MsgInfo;
-      const msg = msgInfo?.message || msgInfo;
-      if (msg?.role === "user") {
-        latestUserInfo = msgInfo;
-        latestUserIdx = i;
-        break;
+    if (lastConversationKeyRef.current !== activeConversationKey) {
+      const prev = lastConversationKeyRef.current;
+      if (prev) {
+        stateByConvRef.current.set(prev, {
+          byAgent: byAgentAccumRef.current,
+          activeAssistantMsgId: activeAssistantMsgIdRef.current,
+          lastUserTurnKey: lastUserTurnKeyRef.current,
+        });
       }
-    }
-    if (!latestUserInfo) return;
-
-    const latestUserMsg = latestUserInfo.message || latestUserInfo;
-    const turnKey = String(
-      latestUserInfo.id || latestUserMsg?.id || `${activeConversationKey}:user:${latestUserIdx}`
-    );
-
-    if (lastUserTurnKeyRef.current == null) {
-      lastUserTurnKeyRef.current = turnKey;
-      return;
-    }
-
-    if (turnKey !== lastUserTurnKeyRef.current) {
-      lastUserTurnKeyRef.current = turnKey;
-      byAgentAccumRef.current = new Map();
-      activeAssistantMsgIdRef.current = null;
+      lastConversationKeyRef.current = activeConversationKey;
+      const saved = stateByConvRef.current.get(activeConversationKey);
+      if (saved) {
+        byAgentAccumRef.current = saved.byAgent;
+        activeAssistantMsgIdRef.current = saved.activeAssistantMsgId;
+        lastUserTurnKeyRef.current = saved.lastUserTurnKey;
+      } else {
+        byAgentAccumRef.current = new Map();
+        activeAssistantMsgIdRef.current = null;
+        lastUserTurnKeyRef.current = null;
+      }
       setReasoningPanels([]);
       setThinkingState(null);
     }
-  }, [throttledMessages, activeConversationKey]);
 
-  useEffect(() => {
-    const streamingAssistantInfo = [...throttledMessages].reverse().find((raw: unknown) => {
-      const mi = raw as MsgInfo;
-      const m = mi.message || mi;
-      const st = mi.status || m?.status;
-      return m?.role === "assistant" && (st === "updating" || st === "loading");
-    }) as MsgInfo | undefined;
-
-    const streamingAssistantMsg = streamingAssistantInfo?.message || streamingAssistantInfo;
-
-    if (streamingAssistantInfo) {
-      const streamingId = streamingAssistantInfo.id || streamingAssistantMsg?.id || null;
-      if (streamingId) activeAssistantMsgIdRef.current = String(streamingId);
-    }
-
-    if (!streamingAssistantInfo && !activeAssistantMsgIdRef.current) {
+    if (storeReadyKey != null && storeReadyKey !== activeConversationKey) {
       return;
     }
 
-    let activeInfo: MsgInfo | undefined =
-      streamingAssistantInfo ||
-      (throttledMessages.find((raw: unknown) => {
-        const mi = raw as MsgInfo;
-        const m = mi.message || mi;
-        const id = mi.id || m?.id;
-        return id && activeAssistantMsgIdRef.current && String(id) === activeAssistantMsgIdRef.current;
-      }) as MsgInfo | undefined);
-
-    if (!activeInfo && activeAssistantMsgIdRef.current) {
-      activeInfo = [...throttledMessages].reverse().find((raw: unknown) => {
-        const mi = raw as MsgInfo;
-        const m = mi.message || mi;
-        const id = mi.id || m?.id;
-        return m?.role === "assistant" && id && String(id) === activeAssistantMsgIdRef.current;
-      }) as MsgInfo | undefined;
+    const agents = availableAgentsRef.current;
+    const latestUser = findLastMessage(throttledMessages, (_info, msg) => msg.role === "user");
+    if (latestUser) {
+      const { info, msg } = unwrapMsg(latestUser);
+      const turnKey = String(
+        info.id || msg.id || `${activeConversationKey}:user:${throttledMessages.lastIndexOf(latestUser)}`
+      );
+      if (lastUserTurnKeyRef.current == null) {
+        lastUserTurnKeyRef.current = turnKey;
+      } else if (turnKey !== lastUserTurnKeyRef.current) {
+        lastUserTurnKeyRef.current = turnKey;
+        byAgentAccumRef.current = new Map();
+        activeAssistantMsgIdRef.current = null;
+        setReasoningPanels([]);
+        setThinkingState(null);
+      }
     }
 
-    const activeMsg = activeInfo?.message || activeInfo;
+    const streamingAssistantInfo = findLastMessage(throttledMessages, (info, msg) => {
+      return msg.role === "assistant" && isStreamingStatus(info.status || msg.status);
+    });
+    if (streamingAssistantInfo) {
+      const { info, msg } = unwrapMsg(streamingAssistantInfo);
+      const streamingId = info.id || msg.id || null;
+      if (streamingId) activeAssistantMsgIdRef.current = String(streamingId);
+    }
+
+    const lastAssistant = findLastMessage(throttledMessages, (_info, msg) => msg.role === "assistant");
+    const lastAssistantMeta = lastAssistant ? unwrapMsg(lastAssistant).msg.meta : undefined;
+
+    if (!streamingAssistantInfo && !activeAssistantMsgIdRef.current) {
+      const hasLiveAccum = Array.from(byAgentAccumRef.current.values()).some(
+        (accum) => accum.stepLines.size > 0
+      );
+      if (hasLiveAccum) {
+        const streams = streamsFromMeta(lastAssistantMeta);
+        const panelsAcc: AgentReasoningPanel[] = [];
+        for (const aid of Object.keys(streams)) {
+          const accum = byAgentAccumRef.current.get(aid);
+          const slice = streams[aid] || {};
+          const steps = accum ? stepsFromAccum(accum) : [];
+          if (!includeReasoningPanel(aid, slice, steps)) {
+            continue;
+          }
+          panelsAcc.push(panelForAgent(aid, slice, steps, agents));
+        }
+        setReasoningPanels(panelsAcc);
+        return;
+      }
+      const restoredStreams = streamsFromMeta(lastAssistantMeta);
+      const restoredKeys = Object.keys(restoredStreams).filter((aid) => {
+        const slice = restoredStreams[aid] || {};
+        return includeReasoningPanel(aid, slice, stepsFromAgentStreamSlice(slice));
+      });
+      if (!lastAssistantMeta || restoredKeys.length === 0) {
+        setReasoningPanels([]);
+        return;
+      }
+      setReasoningPanels(
+        restoredKeys.map((aid) => {
+          const slice = restoredStreams[aid] || {};
+          return panelForAgent(aid, slice, stepsFromAgentStreamSlice(slice), agents);
+        })
+      );
+      return;
+    }
+
+    const trackedId = activeAssistantMsgIdRef.current;
+    const activeInfo =
+      streamingAssistantInfo ||
+      (trackedId
+        ? findLastMessage(throttledMessages, (info, msg) => {
+            const id = info.id || msg.id;
+            return msg.role === "assistant" && !!id && String(id) === trackedId;
+          })
+        : undefined);
+
+    const activeMsg = activeInfo ? unwrapMsg(activeInfo).msg : undefined;
     const activeStatus = activeInfo ? (activeInfo.status || activeMsg?.status) : null;
     const meta = activeMsg?.meta;
 
     if (meta?.thinkingState) {
       setThinkingState(meta.thinkingState as string);
-    } else if (activeStatus !== "updating" && activeStatus !== "loading") {
+    } else if (!isStreamingStatus(activeStatus)) {
       setThinkingState(null);
     }
 
@@ -282,60 +433,38 @@ export function useChatProcessing(
       return;
     }
 
-    // Apply latest slices to accumulators first (including the success frame — the old early-return
-    // completion path skipped this and dropped final reasoning_step / workflow lines).
     if (meta) {
       for (const aid of agentKeys) {
         applySliceToAccum(aid, streams[aid] || {}, getOrCreateAccum);
       }
     }
 
-    const panelsAcc: AgentReasoningPanel[] = [];
+    const live = isStreamingStatus(activeStatus);
+    setReasoningPanels(
+      agentKeys.flatMap((aid) => {
+        const slice = streams[aid] || {};
+        const accum = getOrCreateAccum(aid);
+        const steps = stepsFromAccum(accum);
+        if (!includeReasoningPanel(aid, slice, steps)) {
+          return [];
+        }
+        return [
+          panelForAgent(
+            aid,
+            slice,
+            steps,
+            agents,
+            live ? accum.currentStep : null,
+            live
+          ),
+        ];
+      })
+    );
 
-    for (const aid of agentKeys) {
-      const slice = streams[aid] || {};
-      const accum = getOrCreateAccum(aid);
-
-      const stepNums = Array.from(accum.stepLines.keys()).sort((a, b) => a - b);
-      const items: ThoughtChainItemType[] = stepNums.map((n) => {
-        const lines = accum.stepLines.get(n) || [];
-        const isActive =
-          (activeStatus === "updating" || activeStatus === "loading") && accum.currentStep === n;
-        return {
-          key: `${aid}:step:${n}`,
-          title: `Step ${n}:`,
-          description: lines.map((line, idx) => (
-            <div key={`${aid}:${n}:${idx}`}>{line}</div>
-          )),
-          status: isActive ? "loading" : "success"
-        };
-      });
-
-      const { agentName, displayLabel } = resolveAgentDisplayName(aid, availableAgentsRef.current);
-      panelsAcc.push({
-        agentKey: aid,
-        displayLabel,
-        agentName,
-        thoughtChainItems: items,
-        thinkingText: slice.thinkingText ?? null,
-        thinkingComplete: !!slice.thinkingComplete
-      });
-    }
-
-    setReasoningPanels(panelsAcc);
-
-    if (!streamingAssistantInfo && activeAssistantMsgIdRef.current && (activeStatus === "success" || activeStatus === "error")) {
+    if (!streamingAssistantInfo && trackedId && (activeStatus === "success" || activeStatus === "error")) {
       activeAssistantMsgIdRef.current = null;
     }
-  }, [throttledMessages]);
-
-  useEffect(() => {
-    byAgentAccumRef.current = new Map();
-    activeAssistantMsgIdRef.current = null;
-    lastUserTurnKeyRef.current = null;
-    setReasoningPanels([]);
-    setThinkingState(null);
-  }, [activeConversationKey]);
+  }, [throttledMessages, activeConversationKey, storeReadyKey]);
 
   return {
     reasoningPanels,

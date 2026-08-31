@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Helper functions to integrate cost tracking into model inference results.
@@ -58,6 +58,7 @@ def track_model_result(
     conversation_id: Optional[str] = None,
     command_id: Optional[str] = None,
     principal_id: Optional[str] = None,
+    root_conversation_id: Optional[str] = None,
     enable_redis_tracking: bool = True,
     enable_budget_recording: bool = True,
 ) -> float:
@@ -119,6 +120,7 @@ def track_model_result(
                 conversation_id=conversation_id,
                 command_id=command_id,
                 principal_id=principal_id,
+                root_conversation_id=root_conversation_id,
             )
 
         # Record for budget tracking (ADR-0018)
@@ -155,6 +157,7 @@ def _track_to_redis(
     conversation_id: Optional[str],
     command_id: Optional[str],
     principal_id: Optional[str] = None,
+    root_conversation_id: Optional[str] = None,
 ) -> float:
     """Track cost to Redis streams (ADR-0018)."""
     try:
@@ -169,6 +172,7 @@ def _track_to_redis(
             command_id=command_id,
             task_id=task_id,
             principal_id=principal_id,
+            root_conversation_id=root_conversation_id,
         )
     except Exception as e:
         logger.warning(

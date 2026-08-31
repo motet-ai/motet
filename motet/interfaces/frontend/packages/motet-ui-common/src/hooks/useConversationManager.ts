@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-31
  *
  * Description:
  *     Framework-agnostic conversation list management. Encapsulates CRUD
@@ -69,6 +69,12 @@ export type ConversationEntry = {
   key: string;
   label: string;
   timestamp?: number;
+  /** List-scope agent that owns this conversation. */
+  agent_id?: string;
+  /** Follow-up agent when it differs from list scope (e.g. core.subagent). */
+  turn_agent_id?: string;
+  /** Immediate parent, or null for a root chat. */
+  parent_conversation_id?: string | null;
 };
 
 /**
@@ -282,7 +288,14 @@ export function useConversationManager(
 
     if (replace) {
       const items = serverList.length > 0
-        ? serverList.map((c) => ({ key: c.id, label: c.title || "New Chat", timestamp: c.updated_at }))
+        ? serverList.map((c) => ({
+            key: c.id,
+            label: c.title || "New Chat",
+            timestamp: c.updated_at,
+            ...(c.agent_id ? { agent_id: c.agent_id } : {}),
+            ...(c.turn_agent_id ? { turn_agent_id: c.turn_agent_id } : {}),
+            parent_conversation_id: c.parent_conversation_id,
+          }))
         : [{ key: randomId(), label: "New Chat", timestamp: Date.now() }];
       setConversations(items);
       restoreActiveForScope(scope, new Set(items.map((c) => c.key)));
@@ -290,7 +303,17 @@ export function useConversationManager(
       const existingKeys = new Set(conversationsRef.current.map((c) => c.key));
       for (const c of serverList) {
         if (!existingKeys.has(c.id)) {
-          addConversation({ key: c.id, label: c.title || "New Chat", timestamp: c.updated_at }, "append");
+          addConversation(
+            {
+              key: c.id,
+              label: c.title || "New Chat",
+              timestamp: c.updated_at,
+              ...(c.agent_id ? { agent_id: c.agent_id } : {}),
+              ...(c.turn_agent_id ? { turn_agent_id: c.turn_agent_id } : {}),
+              parent_conversation_id: c.parent_conversation_id,
+            },
+            "append"
+          );
         }
       }
     }
@@ -374,6 +397,18 @@ export function useConversationManager(
     setActiveConversationKey(key);
     setConversationId(key);
   }, [setActiveConversationKey]);
+
+  const openConversation = useCallback((key: string, opts?: { title?: string; agentId?: string }) => {
+    const id = String(key || "").trim();
+    if (!id) return;
+    const exists = conversationsRef.current.some((c: { key?: string }) => c.key === id);
+    if (!exists) {
+      const title = String(opts?.title || "").trim() || "Sub-agent";
+      addConversation({ key: id, label: title, timestamp: Date.now() }, "prepend");
+    }
+    setActiveConversationKey(id);
+    setConversationId(id);
+  }, [addConversation, setActiveConversationKey]);
 
   const handleRenameConversation = useCallback((convKey: string) => {
     const conv = conversations.find((c: any) => c.key === convKey);
@@ -471,6 +506,7 @@ export function useConversationManager(
     removeConversation,
     handleNewConversation,
     handleConversationChange,
+    openConversation,
     handleRenameConversation,
     handleRenameSubmit,
     handleDeleteConversation,

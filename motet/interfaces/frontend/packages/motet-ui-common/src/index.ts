@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-26
+ * Last Modified: 2026-08-30
  *
  * Description:
  *     Shared UI components, hooks, types, and utilities for Motet applications.
@@ -24,6 +24,8 @@ export type {
   WorkflowStepEvent,
   AgentStreamSlice,
   AgentReasoningPanel,
+  ToolSummaryRow,
+  SpawnChildCard,
 } from "./types";
 export { DEFAULT_STREAM_AGENT_KEY } from "./types";
 export type { AttachmentState, DraftUploadItem, PresetIcons } from "./types";
@@ -54,6 +56,7 @@ export type {
 } from "./hooks";
 export { useRequestContext } from "./hooks";
 export type { UseRequestContextOptions } from "./hooks";
+export { useLiveTurns } from "./hooks";
 
 // Components
 export {
@@ -86,7 +89,16 @@ export { MediaRenderer } from "./components";
 export type { MediaRendererProps } from "./components";
 
 // Utils
-export { randomId, debugLog, parseSseBuffer } from "./utils";
+export { randomId, debugLog, parseSseBuffer, consumeChatSse } from "./utils";
+export {
+  LiveTurnRegistry,
+  chatOutputConversationId,
+  isRenderableLiveMessage,
+  shouldClearLiveTurn,
+  shouldKeepLiveStreamOverHistory,
+  tagChatOutputConversation,
+} from "./utils";
+export type { LiveTurn } from "./utils";
 export {
   shortAgentLabel,
   resolveAgentDisplayName,
@@ -94,12 +106,29 @@ export {
   spawnAgentOrdinal,
   assistantTurnSlices,
   assistantTranscriptTurnSlice,
+  asSpawnChildCards,
   groupTranscriptAssistantTurns,
   resolvePrimaryAgentKey,
   resolveTranscriptPrimaryAgentKey,
+  spawnCardsForTurn,
+  peerSpeakerSlices,
+  spawnAgentKeyForChildConversation,
+  projectLiveSpawnChildMessage,
+  resolveDisplayedLiveMessage,
 } from "./utils";
 export type { AgentRegistryEntry, AssistantTurnSlice, TranscriptHistoryMessage } from "./utils";
-export { formatExecutionStatusLine } from "./utils";
+export {
+  formatCostUsd,
+  formatExecutionStatusLine,
+  groupToolSummariesIntoSteps,
+  isConductorSidebarThought,
+  knownCostUsd,
+  positiveLoopStep,
+  stepsFromAgentStreamSlice,
+  sumKnownCostUsd,
+  toolExecutionsToSummaries,
+  toolSummaryStatusLines,
+} from "./utils";
 export { CORE_NAMESPACE, namespaceFromQualifiedName, qualifyWithCoreNamespace } from "./utils";
 export { isAlwaysOnThinkingModel, treatsThinkingAsAlwaysOn } from "./utils";
 
@@ -107,6 +136,7 @@ export { isAlwaysOnThinkingModel, treatsThinkingAsAlwaysOn } from "./utils";
 export {
   listConversations,
   getConversation,
+  getConversationCost,
   updateConversationTitle,
   deleteConversation,
   mapHistoryToMessages,
@@ -118,6 +148,7 @@ export type {
   ConversationHistoryItem,
   ConversationDetailResponse,
   ListConversationsParams,
+  ConversationCostResponse,
 } from "./api";
 
 // Chat protocol (framework-agnostic SSE reducer)

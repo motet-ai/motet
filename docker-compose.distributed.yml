@@ -1,7 +1,7 @@
 name: motet_dev
 
 # Motet-bearing services pin
-#   ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/<name>:${MOTET_IMAGE_TAG:-v0.1.1}
+#   ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/<name>:${MOTET_IMAGE_TAG:-v0.1.2}
 # `motet-cli local up` pulls when the tag is not local (`pull_policy: missing`).
 # `motet-cli local up --build` rebuilds from this tree. vite-dev, vite-admin,
 # and local-inference stay build-only. Valkey, Postgres, and SeaweedFS stay
@@ -57,7 +57,7 @@ services:
 
   redis-tls:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/redis-tls:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/redis-tls:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: ./docker/redis/tls-proxy
@@ -158,7 +158,7 @@ services:
   # Database Migrator - Initialize pgvector tables
   migrator:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/migrator:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/migrator:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -177,7 +177,7 @@ services:
   # Keycloak Identity Provider (JWT Authentication)
   keycloak:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/keycloak:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/keycloak:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: ./docker/keycloak
@@ -219,7 +219,7 @@ services:
 
   keycloak-bootstrap:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/keycloak-bootstrap:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/keycloak-bootstrap:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -251,7 +251,7 @@ services:
   # Vault Initializer - Initialize distributed vault service
   vault-init:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/vault-init:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/vault-init:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -318,7 +318,7 @@ services:
   # socket, so this image does not include the worker browser/ML runtime.
   mcp-manager:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/mcp-manager:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/mcp-manager:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -483,7 +483,7 @@ services:
   # SentenceTransformer model in each worker process.
   embedding-server:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/embedding-server:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/embedding-server:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -518,7 +518,7 @@ services:
   # Main HTTP Interface (image includes built Vite apps; dev volume .:/app overrides them so use vite-dev/vite-admin for frontend)
   motet-api:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/motet-api:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/motet-api:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -794,7 +794,7 @@ services:
   # Worker 1 for Distributed Processing (with embedded MCPInstanceManager)
   worker-1:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -1000,7 +1000,7 @@ services:
   # Worker 2 for Distributed Processing (with embedded MCPInstanceManager and optional local inference - ADR-0042)
   worker-2:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -1232,7 +1232,7 @@ services:
   # Worker Lifecycle Management - Dedicated service for worker start/stop/restart (uses worker_lifecycle image)
   worker-lcm:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker-lifecycle:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/worker-lifecycle:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .
@@ -1312,7 +1312,7 @@ services:
   # Scheduler - Periodic Task Scheduler (Celery beat)
   scheduler:
     logging: *default-logging
-    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/scheduler:${MOTET_IMAGE_TAG:-v0.1.1}
+    image: ${MOTET_IMAGE_REGISTRY:-ghcr.io/motet-ai}/scheduler:${MOTET_IMAGE_TAG:-v0.1.2}
     pull_policy: missing
     build:
       context: .

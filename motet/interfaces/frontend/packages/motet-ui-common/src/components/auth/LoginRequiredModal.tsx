@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-01-28
+ * Last Modified: 2026-08-29
  *
  * Description:
  *     Modal dialog that blocks the UI when user is not authenticated.
@@ -18,7 +18,6 @@
  * Usage:
  *     import { LoginRequiredModal } from "@motet/ui-common/components";
  */
-import React from "react";
 import { Button, Modal, Space, Typography } from "antd";
 import { LoginOutlined, KeyOutlined } from "@ant-design/icons";
 

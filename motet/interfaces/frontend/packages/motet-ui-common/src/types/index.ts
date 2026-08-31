@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-31
  *
  * Description:
  *     Shared type definitions for Motet UI components.
@@ -102,6 +102,27 @@ export type WorkflowStepEvent = {
   timestamp?: string;
 };
 
+/** Short tool row stored for conversation reload (sidebar Step N). */
+export type ToolSummaryRow = {
+  tool_name: string;
+  status: string;
+  preview?: string;
+  step?: number;
+  duration_ms?: number;
+};
+
+/** Card pointer from a parent turn to an isolated spawn-child conversation. */
+export type SpawnChildCard = {
+  child_conversation_id: string;
+  agent_id?: string;
+  turn_agent_id?: string;
+  title: string;
+  preview?: string;
+  cost_usd?: number;
+  thinking_text?: string;
+  tool_summaries?: ToolSummaryRow[];
+};
+
 /** Per-agent payload merged in chat message meta.agentStreams (task-stream attribution). */
 export type AgentStreamSlice = {
   contentText?: string;
@@ -119,14 +140,21 @@ export type AgentStreamSlice = {
     error?: string;
     startedAt?: number;
     completedAt?: number;
+    /** Loop iteration when the tool started; used to rebuild Step N after a conversation switch. */
+    step?: number;
   }>;
+  /** Latest loop iteration from reasoning_step; copied onto new toolExecutions. */
+  currentStep?: number;
+  toolSummaries?: ToolSummaryRow[];
+  /** Priced loop estimate for this agent; omitted when unknown. */
+  costUsd?: number;
   step?: unknown;
   turn?: unknown;
   thinkingState?: string | null;
   [key: string]: unknown;
 };
 
-/** One right-sidebar column: thinking + thought chain for a single agent id. */
+/** One right-sidebar column: steps and cost for a single agent id. */
 export type AgentReasoningPanel = {
   agentKey: string;
   /** Short id segment (e.g. `default` for `core.default`) when no registry name */
@@ -137,6 +165,12 @@ export type AgentReasoningPanel = {
   thoughtChainItems: unknown[];
   thinkingText: string | null;
   thinkingComplete: boolean;
+  /** True when this agent has started thinking; the rail does not show the text. */
+  thinkingStarted?: boolean;
+  /** True while this agent is still thinking; rail shows a spinner, not the text. */
+  thinkingActive?: boolean;
+  /** Priced estimate for this agent; omitted when unknown. */
+  costUsd?: number | null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

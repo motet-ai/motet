@@ -5,12 +5,13 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-31
 
 Description:
     Agent configuration registry and related types. Provides
     AgentConfig, ToolFilter, TurnHooks, and AgentConfigRegistry for resolving
-    named agent configurations (e.g. core.default, core.motet_admin) into
+    named agent configurations (e.g. core.default, core.motet_admin,
+    core.subagent) into
     execution parameters. Also hosts prompt-assembly policy helpers
     (``prompt_policy``) driven by AgentConfig metadata. Agent-related modules
     live under core/agents so registry, resolution helpers, and built-in
@@ -24,18 +25,20 @@ Usage:
     from motet.core.agents import AgentConfigRegistry, get_agent_registry
     registry = get_agent_registry()
     config = registry.get("core.motet_admin")
+    subagent = registry.get("core.subagent")  # builtin_subagent_config()
 
 Notes:
-    - Implementation adds registry.py (models + registry) and built-in
-      config registration per Phase 1.
+    - Built-in agents register on first get_agent_registry() access.
     - All lookups use fully-qualified agent IDs (e.g. core.default).
 """
 
 from .registry import (
+    CORE_SUBAGENT_ID,
     AgentConfig,
     AgentConfigRegistry,
     ToolFilter,
     TurnHooks,
+    builtin_subagent_config,
     ensure_conversation_id_prefix,
     get_agent_registry,
     get_discovery_filter_metadata,
@@ -61,7 +64,9 @@ from .prompt_policy import (
 )
 
 __all__ = [
+    "CORE_SUBAGENT_ID",
     "AgentConfig",
+    "builtin_subagent_config",
     "AgentConfigRegistry",
     "ToolFilter",
     "TurnHooks",

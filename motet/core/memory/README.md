@@ -46,6 +46,7 @@ Central memory coordination with distributed command integration:
 - Targeted forget: `MemoryManager.forget(...)` deletes KV rows via `BaseStore.delete` and matching vector docs via `delete_ids`. Same selectors as `retag` (`memory_ids`, `conversation_id`, or `filter_tag`). Conversation and tag together intersect. Agent tool is `core.memory_forget`; operator HTTP clear is unchanged.
 - Hierarchical routing via `MemoryManager.store_memory(...)` and ordered recall via `MemoryManager.recall(...)` (working → short-term → long-term).
 - Conversation scope tags: when `conversation_id` is present, `store_memory` auto-adds `conversation:{id}` so `hybrid_retrieve` / chat prepare can filter by that tag (not only `MemoryItem.conversation_id`).
+- Conversation attribution: `store_memory` files the item under `metadata["conversation_id"]` when set, falling back to the caller's context id. This lets a command write rows onto another conversation (e.g. `core.spawn_agents` persisting a child's first turn from the parent's tool context).
 - Working-memory reset each turn (configurable).
 
 ### Planned

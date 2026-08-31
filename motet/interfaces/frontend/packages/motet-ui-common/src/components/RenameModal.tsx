@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-03-24
+ * Last Modified: 2026-08-29
  *
  * Description:
  *     Generic modal dialog for renaming an entity (conversation, scope, etc.).
@@ -22,7 +22,6 @@
  *       title="Rename Conversation"
  *     />
  */
-import React from "react";
 import { Form, Input, Modal } from "antd";
 
 export interface RenameModalProps {

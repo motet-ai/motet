@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-31
 
 Description:
     Agent discovery API for agent configuration registry. Provides a
@@ -208,6 +208,14 @@ class AgentListItem(BaseModel):
         default=3,
         description="Maximum explicit user-requested skills activated per turn.",
         json_schema_extra={"example": 3},
+    )
+    selectable: bool = Field(
+        default=True,
+        description=(
+            "When true, chat UIs may offer this agent as a new-conversation "
+            "picker option. When false the agent is still callable."
+        ),
+        json_schema_extra={"example": True},
     )
 
 

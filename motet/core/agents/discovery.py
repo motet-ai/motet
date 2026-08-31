@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-31
 
 Description:
     Shared discovery/synchronization services for agents. Provides
@@ -79,6 +79,7 @@ def serialize_agent_config(cfg: AgentConfig) -> Dict[str, Any]:
         "display_name": str(getattr(cfg, "display_name", "") or ""),
         "description": str(getattr(cfg, "description", "") or ""),
         "allowed_roles": list(getattr(cfg, "allowed_roles", ["*"]) or ["*"]),
+        "selectable": bool(getattr(cfg, "selectable", True)),
         "aliases": list(getattr(cfg, "aliases", []) or []),
         "system_prompt": str(getattr(cfg, "system_prompt", "") or ""),
         "tool_filter": tool_filter.model_dump() if tool_filter is not None else {},

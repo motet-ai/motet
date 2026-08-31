@@ -4,7 +4,7 @@ Agent configuration and registry. Agent-related code lives under `core/agents` s
 
 ## Contents
 
-- **registry.py**: `AgentConfig`, `ToolFilter`, `TurnHooks`, `AgentConfigRegistry`, plus `resolve_tools`, `resolve_agent_id`, `ensure_conversation_id_prefix`, and built-in configs for `core.default` and `core.motet_admin`. Lookup from fully-qualified `agent_id` to config used when invoking `agent_turn`. Bare chat names are opt-in via `AgentConfig.aliases` only (not auto-claimed from `agent_id`).
+- **registry.py**: `AgentConfig`, `ToolFilter`, `TurnHooks`, `AgentConfigRegistry`, plus `resolve_tools`, `resolve_agent_id`, `ensure_conversation_id_prefix`, and built-in configs for `core.default`, `core.motet_admin`, and `core.subagent` (`builtin_subagent_config()`). Lookup from fully-qualified `agent_id` to config used when invoking `agent_turn`. Bare chat names are opt-in via `AgentConfig.aliases` only (not auto-claimed from `agent_id`). `selectable=False` agents are callable but omitted from new-chat pickers.
 - **discovery.py**: `serialize_agent_config` / `list_visible_agents` for API and ops-dashboard. Serialization includes model overrides, loop limits, skills, metadata, surfaces, tool filter, turn hooks, output contract, and handoffs.
 - **prompt_policy.py**: Turn prompt-assembly policies from `AgentConfig.metadata.prompt_policy` (default motet_system_primary vs `client_system_primary` for OpenAI-compat / Cursor backends).
 

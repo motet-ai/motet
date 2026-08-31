@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "motet"
-version = "0.1.1"
+version = "0.1.2"
 description = "Motet runtime — distributed AI command and control framework"
 readme = "README.md"
 license = { text = "FSL-1.1-ALv2" }

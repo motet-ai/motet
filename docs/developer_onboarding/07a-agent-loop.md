@@ -61,7 +61,7 @@ sequenceDiagram
 - **agentic_loop** is the **loop body**: one iteration (LLM call → tool/workflow execution → maybe continue). It is not a distributed command and not the "agent" object; it is the engine the agent runs on the same worker.
 - **Chat turn**: `agent_turn` runs hooks, then `run_agent` on the same worker. The loop never sits behind a nested `agent_loop` worker.
 - **Workflow step**: `command_type="core.agent_loop"` runs the same loop as a command. No registry agent, no turn hooks, no transcript finalize. Use `agent_turn` on a step only when you want a full chat turn.
-- **Sub-agents**: `core.spawn_agents` does `motet.do(agent_loop)` once per task so those runs overlap on different workers. Each uses a distinct `agent_id` (`{parent}.spawn-N`) and writes to the parent task stream so the chat UI can attribute each slice.
+- **Sub-agents**: `core.spawn_agents` joins `agent_loop` once per task so those runs overlap on different workers. Each uses a distinct live `agent_id` (`{parent}.spawn-N`) and an isolated conversation (opaque id, parent/root pointers). Live tokens still write to the parent task stream so the chat UI can attribute each slice. After persist, the child is listed under the parent chat agent; follow-up is `agent_turn` as `core.subagent` (prompt, hooks, rails, and the stored tool cage).
 
 ### Stream keys
 
@@ -151,15 +151,17 @@ sub-agent: the tool dispatches `core.agent_loop` per task with a distinct
 different workers and the chat UI can attribute each slice. Sub-agents get the parent's tool filter minus
 `core.spawn_agents` itself. Tools the task declared become that child's
 catalog. Set `discover: true` on a task to leave catalog search on; that
-is opt-in, not the default. They also get a short worker system prompt —
-not the parent
-transcript and not the Motet assistant fallback — that names the child's
-iteration, tool-call, and 60-second tool-time caps. The loop's last-two-rounds wrap-up is the
-same notice a parent turn gets. The user instruction is the rest of the
-brief. Successful child write-ups are stored on the parent conversation
-as non-root transcript rows (`{parent}.spawn-N`) so Chat Explorer can
-rebuild the nested turn after a refresh. Thinking traces stay live-session
-only. See [Reasoning](./10-reasoning.md).
+is opt-in, not the default. The first-turn brief is `core.subagent`'s
+system prompt — not the parent transcript and not the Motet assistant
+fallback — including that agent's iteration, tool-call, and tool-time
+rails. The loop's last-two-rounds wrap-up is the same notice a parent
+turn gets. The user instruction is the rest of the brief. Each successful
+child is persisted as its own conversation (opaque id) — user brief plus
+assistant reply and tools — and listed under the parent chat agent.
+Follow-up is `agent_turn` as `core.subagent` with the stored tool cage.
+The parent turn keeps a card pointer (`spawn_children`). Live tokens
+still stream on the parent task as `{parent}.spawn-N`. See
+[Reasoning](./10-reasoning.md).
 
 `core.agent_loop` is reused for those sub-agents; only `agent_id`, `input`,
 tools, and stream options change. The top-level chat turn does **not** go
@@ -324,6 +326,7 @@ Top-level key **`agents`** must be a **list** of objects. Each object is an agen
 | `display_name` | No | Human-readable name for the UI. Default `""`. |
 | `description` | No | Short description of what the agent does. Default `""`. |
 | `allowed_roles` | No | Roles allowed to invoke this agent. Default `["*"]` (any authenticated principal). |
+| `selectable` | No | When true (default), chat UIs offer this agent as a new-conversation picker option. `core.subagent` is `false`: callable for spawn follow-up, not a start-a-chat choice. |
 | `tool_filter` | No | How tools are selected for this agent. Default `{ mode: "discovery" }`. See below. |
 | `turn_hooks` | No | Command names for orchestration phases (e.g. conversation_analysis, context_prepare, finalize, after_finalize). Optional; omit or leave null to skip a phase. See [Turn hooks](#turn-hooks) for order, purpose, and usage. |
 | `output_contract` | No | Structured-output contract for this agent's turns. Constrains one finalize model call after the loop stops. A per-call `output_contract` on `AgentTurnData` wins when set. |

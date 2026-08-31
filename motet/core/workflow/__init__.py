@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Unified workflow management system.
@@ -35,9 +35,10 @@ Description:
     passes; the step reports ``stopped_reason`` for dependents to gate on.
 
     **Conversation isolation** (``isolate_conversation``): when set, each step
-    invocation (or each foreach iteration) runs under a child ``conversation_id``
-    so transcript history does not accumulate across chunks; parent Redis history
-    is retained for audit/cost.
+    invocation (or each foreach iteration) runs under a new opaque child
+    ``conversation_id`` with stored parent/root pointers so transcript history
+    does not accumulate across chunks; parent Redis history is retained for
+    audit/cost.
 
     **Discovery keywords**: optional ``keywords`` plus tokens from the workflow
     id, name, and step ``tool_name`` values are indexed for ``core.tools_search``

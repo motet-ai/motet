@@ -65,7 +65,7 @@ graph LR
     SY --> R["Balanced assessment"]
 ```
 
-Each step is a `core.agent_turn`, so every agent gets the full lifecycle — system prompt, memory reset, context preparation, tool access, and turn finalization — not just a bare LLM call. The synthesizer receives the other two responses templated into its message:
+Each step is a `core.agent_turn`, so every agent gets the full lifecycle — system prompt, memory reset, context preparation, tool access, and turn finalization — not just a bare LLM call. The synthesizer receives the other two responses templated into its user message:
 
 ```yaml
   synthesize:
@@ -74,7 +74,7 @@ Each step is a `core.agent_turn`, so every agent gets the full lifecycle — sys
     command_data:
       agent_id: "expert-panel.synthesizer"
       messages:
-        - role: system
+        - role: user
           content: >
             --- OPTIMIST ANALYSIS ---
             {{analyze_optimist.final_response}}
@@ -135,7 +135,7 @@ Prefer the workflow when the sequence is known — it is cheaper and you can dif
 
 ## Sub-agent loops
 
-When an agent turn spawns another agent — through a workflow step, a bundle tool, or `core.spawn_agents` — the child gets its own loop context carrying `parent_agent_id`. A `core.spawn_agents` child also gets a short worker system prompt (including its iteration, tool-call, and 60-second tool-time caps) and the tools that task declared as its catalog; it does not inherit the parent transcript. Catalog search is opt-in per task (`discover: true`). Fan-in comes back as each child's full write-up. Repeating a child's exact same web fetch this turn is refused and pointed at that observation; the parent does not get the child's page text. The loop tells every Motet-owned agent when it is on its last two rounds, and a rail stop asks for one tools-off write-up so partial findings survive. `core.spawn_agents` children write tokens and thinking to the same task stream as the parent, tagged with `{parent}.spawn-N`. Successful child write-ups are stored on the parent conversation as non-root transcript rows so a refresh can rebuild the nested turn. Thinking traces stay live-session only. Full `agent_turn` children (for example an expert panel) finalize the same way. Transcript rows record which agent produced each message and whether that row is the conversation's root.
+When an agent turn spawns another agent — through a workflow step, a bundle tool, or `core.spawn_agents` — the child gets its own loop context carrying `parent_agent_id`. A `core.spawn_agents` child runs as `core.subagent`: that agent's system prompt, rails, and hooks, plus the tools that task declared as its catalog. It does not inherit the parent transcript. Catalog search is opt-in per task (`discover: true`). Fan-in comes back as each child's full write-up. Repeating a child's exact same web fetch this turn is refused and pointed at that observation; the parent does not get the child's page text. The loop tells every Motet-owned agent when it is on its last two rounds, and a rail stop asks for one tools-off write-up so partial findings survive. `core.spawn_agents` children write tokens and thinking to the same task stream as the parent, tagged with `{parent}.spawn-N`. Each successful child is persisted as its own conversation and listed under the parent chat agent; the parent turn keeps a card pointer. Follow-up is `agent_turn` as `core.subagent` with the stored tool cage. Full `agent_turn` children (for example an expert panel) finalize the same way. Transcript rows record which agent produced each message and whether that row is the conversation's root.
 
 That bookkeeping is what lets a UI show a panel discussion as distinct, attributed voices instead of one interleaved blur. [Streaming Responses](./13-streaming-responses.md) covers the event shapes.
 

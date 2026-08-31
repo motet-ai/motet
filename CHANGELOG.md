@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-31
+
+### Added
+- Isolated spawn-child conversations: each `core.spawn_agents` child is its own
+  conversation with parent/root pointers, a first-turn brief and reply, and a card
+  on the parent turn. Chat Explorer opens those cards as real chats.
+- `core.subagent` follow-up while the child stays listed under the parent chat agent.
+- `parent_conversation_id` on conversation list and GET (`null` for roots).
+- Persist and restore thinking, tool summaries, and chat cost across reload.
+- Chat Explorer can stream more than one conversation at once and shows in-flight
+  list state.
+- Evaluation/public snapshots include the Chat Explorer and Manage screenshots
+  (`docs/images/`) so the README and Chat Explorer onboarding embeds render.
+
+### Changed
+- Deleting a parent conversation also clears its isolated children.
+- `prepare_context` skips empty-query memory recall (the 60s timeout path).
+- Expert-panel `discuss` puts the topic on a user message and defaults to o3-mini.
+
+### Fixed
+- Memory store no longer files a row under a caller-supplied `conversation_id`.
+- A spawn card is kept for each child even when one transcript persist fails.
+- Chat Explorer pins the live stream and auto-title to the owning conversation.
+
 ## [0.1.1] - 2026-08-28
 
 ### Added

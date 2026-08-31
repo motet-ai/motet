@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-28
+Last Modified: 2026-08-31
 
 Description:
     Comprehensive command data classes for the Motet distributed framework.
@@ -651,7 +651,13 @@ class GetConversationData(BaseCommandData):
 
 class ClearConversationData(BaseCommandData):
     """Data payload for clearing a conversation (registry + memory/vector)."""
-    conversation_id: str = Field(..., description="Conversation ID to clear.")
+    conversation_id: str = Field(
+        ...,
+        description=(
+            "Conversation ID to clear. Isolated descendants of this conversation "
+            "(spawn children and isolate_conversation steps) are cleared too."
+        ),
+    )
 
 
 class RegisterConversationData(BaseCommandData):
@@ -1096,6 +1102,35 @@ class FinalizeTurnData(MessageFieldMixin, BaseCommandData):
             "root assistant message (deferral carry-forward). Already incremented and "
             "cap-checked by the reader in agent_turn; ignored when this turn's response "
             "itself asks a new question (a fresh proposal wins over carry)."
+        ),
+    )
+    thinking_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider reasoning for this turn, stored for conversation reload. "
+            "Omitted from next-turn model replay."
+        ),
+    )
+    tool_summaries: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Short tool name, status, and preview for conversation reload. "
+            "Optional step is the loop iteration for sidebar Step N. "
+            "Omitted from next-turn model replay. Not full tool payloads."
+        ),
+    )
+    cost_usd: Optional[float] = Field(
+        default=None,
+        description=(
+            "Estimated USD for this agent's priced model calls. "
+            "Omitted when unpriced. Not next-turn model replay content."
+        ),
+    )
+    spawn_children: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Card pointers to isolated spawn conversations created this turn. "
+            "Omitted from next-turn model replay."
         ),
     )
 

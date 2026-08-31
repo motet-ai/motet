@@ -244,7 +244,7 @@ motet-cli local manage --wait
 
 **Solution**:
 ```bash
-# From the project root (imf/)
+# From the repository root
 python -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -372,6 +372,6 @@ If you encounter issues:
 
 ---
 
-**Last Updated**: 2026-08-28
+**Last Updated**: 2026-08-29
 
 **Congratulations!** You've successfully set up Motet. Continue to [Core Concepts Overview](./05-core-concepts-overview.md) to understand how Motet works.

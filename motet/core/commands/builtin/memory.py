@@ -5,7 +5,7 @@ Copyright (c) 2024-2025 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-31
 
 Description:
     Decorator-based memory commands for the Motet distributed framework.
@@ -398,11 +398,15 @@ def memory_store(data: MemoryStoreData) -> Dict[str, Any]:
     
     # Store memory with intelligent scoping
     # Note: motet_context automatically retrieved by MemoryManager from WorkerLocal
+    # metadata["conversation_id"] overrides where the manager files the row;
+    # that override is for trusted internal writers, not API-supplied metadata.
+    caller_metadata = dict(data.metadata or {})
+    caller_metadata.pop("conversation_id", None)
     result = motet.memory.store(
         content=data.content,
         type=data.type,
         tags=data.tags or [],
-        metadata=data.metadata or {},
+        metadata=caller_metadata,
         scope=scope,
         long_term=data.long_term,
     )

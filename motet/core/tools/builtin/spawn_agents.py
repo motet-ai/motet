@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-26
+Last Modified: 2026-08-31
 
 Description:
     Parallel sub-agent fan-out as an ordinary tool.
@@ -13,14 +13,21 @@ Description:
     The calling loop names concrete work items; each becomes one sub-agent
     running on its own Celery worker via the ``agent_loop`` command. Children write
     tokens and thinking to the parent task stream with ``{parent}.spawn-N``
-    as ``agent_id``. Results come back as a single observation, so the parent
-    loop synthesizes them the way it handles any other tool result — holding
-    the full turn context, and free to fan out again or act on what came back.
+    as ``agent_id``. Each child is claimed and registered at mint, and the
+    spawn instruction is persisted as that conversation's first user
+    message so Explorer can open the running child. The child is listed under
+    the parent chat agent and follows up as ``core.subagent``. Results come back as a
+    single observation, so the parent loop synthesizes them the way it
+    handles any other tool result — holding the full turn context, and free
+    to fan out again or act on what came back.
 
 Dependencies:
     - agent_loop / AgentData: the sub-agent entry point; one Celery task per task item
       so workers actually overlap
     - MotetContext.join: parallel dispatch and fan-in
+    - motet.core.conversations.children: the child-conversation lifecycle
+      (mint isolated id, claim + register, brief before the run, reply row and
+      card pointer after) — this tool only brackets its agent_loop calls with it
     - tool_filter_metadata (delegated on the turn's metadata): the parent's
       ToolFilter snapshot, which sub-agents inherit so they cannot reach past
       what the parent agent was granted
@@ -76,8 +83,8 @@ Notes:
       surface them through discovery.
     - **Children get a static worker system prompt, not the Motet assistant
       fallback.** Children receive a static worker system prompt, not
-      ``_build_agentic_system_prompt``. The worker string names the child's static
-      rails (iterations / tool calls / 60s of tool time) and is identical for every child so
+      ``_build_agentic_system_prompt``. The worker string comes from
+      ``core.subagent`` (rails included) and is identical for every child so
       sibling first-call prefixes stay cacheable; declared tool
       names stay on ``required_tools``, not interpolated into the prompt. The
       loop's trailing wrap-up (remaining rounds) is shared with parent turns.
@@ -95,10 +102,15 @@ Notes:
       returned in ``meta`` so the parent can refuse the same call this
       turn. The parent does not receive the child's page body; an
       inherited hit points at this observation, not a missing local
-      fetch. Successful write-ups are also stored on the parent
-      conversation as non-root transcript rows (``{parent}.spawn-N``)
-      so a page refresh can rebuild the nested turn. Thinking is not
-      stored.
+      fetch.       Successful write-ups are stored as the first turn of an isolated
+      child conversation (opaque ``iso-…`` id with parent/root pointers), registered so they
+      appear in the conversation list. The parent turn keeps a slim
+      card pointer (``meta.spawn_children`` on the tool envelope) rather
+      than nested assistant rows. The parent loop copies those pointers
+      onto the turn result so finalize can persist them on the parent
+      transcript. Provider thinking, tool summaries, and cost on the child
+      turn are for conversation reload and are not replayed as
+      assistant content on the parent.
     - Width is capped by ``MAX_FANOUT_WIDTH``. Over the cap the call is rejected
       with the limit stated, rather than silently truncating declared work.
     - **Partial failure is recovered, not propagated.** ``join`` raises when any
@@ -111,11 +123,17 @@ Notes:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from motet.core.agents.registry import (
+    CORE_SUBAGENT_ID,
+    AgentConfig,
+    builtin_subagent_config,
+    get_agent_registry,
+)
 from motet.core.types import Message
 
 from ..protocol import err, ok
@@ -128,52 +146,6 @@ TOOL_NAME = "core.spawn_agents"
 # Width rail. Each task is a worker slot held for the duration of the fan-out,
 # so an unbounded list starves the pool until gather timeout (ADR-0023 Risk 5).
 MAX_FANOUT_WIDTH = 8
-
-# Per-sub-agent cost rail. Sub-agents answer one scoped question; the parent
-# loop keeps the turn's own larger budget for synthesis and follow-up. This is
-# only a real work budget for a task that declared its tools — a child left to
-# find its own spends most of it on tools_search and answers nothing.
-SUBAGENT_MAX_ITERATIONS = 10
-SUBAGENT_MAX_TOOLS = 8
-# Tighter than the parent turn: eight children inheriting a $0.75 ceiling
-# would be a $6 fan-out. These are the child's own rails.
-SUBAGENT_MAX_COST_USD = 0.20
-SUBAGENT_MAX_PROMPT_TOKENS = 80_000
-# Cumulative join wall clock for Motet tools this child turn, not per
-# iteration. Checked after each tool batch. One in-flight Playwright
-# call can overshoot by its own timeout (~30s). Parent turns stay 0.
-SUBAGENT_MAX_TOOL_TIME_MS = 60_000
-
-# One string for every child. The loop skips its Motet-assistant fallback
-# when history already has a system message; interpolating per-task tool
-# names here would split the sibling cache prefix (ADR-0124). Declared
-# tools are pinned as required_tools on the child's filter instead.
-SUBAGENT_SYSTEM_PROMPT = (
-    "You are one parallel slice of a larger turn. The user message is your "
-    "only task. You cannot see the conversation, the other slices, or a user "
-    "to ask.\n"
-    "Use the tools already listed for this turn. Do not search the catalog "
-    "for more.\n"
-    f"You have at most {SUBAGENT_MAX_ITERATIONS} tool rounds, "
-    f"{SUBAGENT_MAX_TOOLS} tool calls, and "
-    f"{SUBAGENT_MAX_TOOL_TIME_MS // 1000} seconds of tool time. "
-    "A partial answer with sources beats one more fetch."
-)
-
-# Same rails, different grant. Used when a task opts into discovery or
-# declares no tools. A second static string, not an interpolation, so
-# discovery siblings still share a cache prefix (ADR-0124).
-SUBAGENT_DISCOVERY_PROMPT = (
-    "You are one parallel slice of a larger turn. The user message is your "
-    "only task. You cannot see the conversation, the other slices, or a user "
-    "to ask.\n"
-    "You may search the catalog for tools this slice needs. Prefer any tools "
-    "already listed for this turn before searching.\n"
-    f"You have at most {SUBAGENT_MAX_ITERATIONS} tool rounds, "
-    f"{SUBAGENT_MAX_TOOLS} tool calls, and "
-    f"{SUBAGENT_MAX_TOOL_TIME_MS // 1000} seconds of tool time. "
-    "A partial answer with sources beats one more fetch."
-)
 
 # Stop reasons that mean the child ran out of road rather than answering —
 # unless the loop finalized a tools-off write-up (``finalized=True``), in
@@ -196,42 +168,57 @@ def spawn_child_id(parent_agent_id: str, index: int) -> str:
     return f"{parent_agent_id}.spawn-{index + 1}"
 
 
-def _persist_child_transcripts(
+def _persist_spawn_children(
     motet: Any,
     parent_agent_id: str,
+    tasks: Sequence[Any],
     entries: List[Dict[str, Any]],
-) -> None:
-    """Write successful child replies onto the parent conversation transcript."""
-    if not getattr(motet, "conversation_id", None):
-        return
+    child_cids: Sequence[str],
+    brief_written: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Persist each successful child reply on its isolated conversation and return parent pointers."""
     if not getattr(motet, "memory", None):
-        return
-    from motet.core.conversations.transcript_storage import store_subagent_reply
+        return []
+    from motet.core.conversations.children import (
+        complete_child_conversation,
+        parent_registry_scope,
+    )
 
+    registry_agent, surface_id = parent_registry_scope(motet, parent_agent_id)
+    written = brief_written or set()
+    pointers: List[Dict[str, Any]] = []
     for index, entry in enumerate(entries):
         if entry.get("status") != "success":
             continue
         text = str(entry.get("response") or "").strip()
         if not text:
             continue
-        agent_id = spawn_child_id(parent_agent_id, index)
-        try:
-            store_subagent_reply(
-                motet,
-                text,
-                agent_id=agent_id,
-                root_agent_id=str(parent_agent_id),
-                parent_agent_id=str(parent_agent_id),
-            )
-        except Exception as exc:
-            logger.warning(
-                "spawn_agents_child_transcript_failed",
-                agent_id=agent_id,
-                conversation_id=getattr(motet, "conversation_id", None),
-                error=str(exc),
-                error_type=type(exc).__name__,
-                exc_info=True,
-            )
+        if index >= len(child_cids):
+            continue
+        child_cid = child_cids[index]
+        if not child_cid:
+            continue
+        instruction = ""
+        if index < len(tasks):
+            instruction = str(getattr(tasks[index], "instruction", "") or "").strip()
+        if not instruction:
+            instruction = str(entry.get("task") or "").strip()
+        pointer = complete_child_conversation(
+            motet,
+            child_cid=child_cid,
+            reply_text=text,
+            instruction=instruction,
+            registry_agent_id=registry_agent,
+            pointer_agent_id=spawn_child_id(parent_agent_id, index),
+            surface_id=surface_id,
+            brief_written=child_cid in written,
+            thinking_text=str(entry.get("thinking_text") or "") or None,
+            tool_summaries=entry.get("tool_summaries") or None,
+            cost_usd=entry.get("cost_usd"),
+        )
+        if pointer:
+            pointers.append(pointer)
+    return pointers
 
 
 class SpawnTask(BaseModel):
@@ -315,8 +302,19 @@ def _get_motet_context_optional() -> Any:
         return None
 
 
+def _subagent_config() -> AgentConfig:
+    """Live ``core.subagent`` config, or the shipped builtin if unregistered."""
+    try:
+        cfg = get_agent_registry().get(CORE_SUBAGENT_ID)
+        if cfg is not None:
+            return cfg
+    except Exception:
+        pass
+    return builtin_subagent_config()
+
+
 def _child_conversation_history(*, discover: bool = False) -> List[Message]:
-    """Worker brief that keeps the loop from injecting the Motet assistant fallback.
+    """Worker brief from ``core.subagent`` so first turn and follow-up match.
 
     Two static strings, one per grant, so siblings that share a mode keep a
     cacheable prefix. The child's static rails are in the string; live
@@ -324,8 +322,32 @@ def _child_conversation_history(*, discover: bool = False) -> List[Message]:
     names are not interpolated — they land on ``required_tools`` and, when
     caged, on ``AgentData.tools``.
     """
-    prompt = SUBAGENT_DISCOVERY_PROMPT if discover else SUBAGENT_SYSTEM_PROMPT
+    cfg = _subagent_config()
+    prompt = str(cfg.system_prompt or "")
+    if discover:
+        meta = cfg.metadata if isinstance(cfg.metadata, dict) else {}
+        stored = meta.get("discovery_system_prompt")
+        if stored:
+            prompt = str(stored)
     return [Message(role="system", content=prompt)]
+
+
+def _subagent_loop_rails() -> Dict[str, Any]:
+    """First-turn loop rails from the registered ``core.subagent``."""
+    cfg = _subagent_config()
+    meta = cfg.metadata if isinstance(cfg.metadata, dict) else {}
+    raw_tool_time = meta.get("max_tool_time_ms")
+    try:
+        max_tool_time_ms = int(raw_tool_time) if raw_tool_time is not None else None
+    except (TypeError, ValueError):
+        max_tool_time_ms = None
+    return {
+        "max_iterations": int(cfg.max_iterations),
+        "max_tools": int(cfg.max_tools),
+        "max_cost_usd": cfg.max_cost_usd,
+        "max_prompt_tokens": cfg.max_prompt_tokens,
+        "max_tool_time_ms": max_tool_time_ms,
+    }
 
 
 def _always_sticky_tool_names() -> frozenset:
@@ -348,12 +370,15 @@ def _allowed_declared_tools(
     return list(dict.fromkeys(name for name in declared_tools if name and name not in excluded))
 
 
-def _resolve_child_tool_schemas(motet: Any, names: Sequence[str]) -> Optional[List[Any]]:
+def resolve_child_tool_schemas(motet: Any, names: Sequence[str]) -> Optional[List[Any]]:
     """Export canonical schemas for *names*. ``None`` means do not cage.
 
     An empty export must not become ``tools=[]``: that is an explicit no-tools
     turn, not discovery. Falling back to ``None`` keeps the required_tools pin
     and lets the child search — worse than a cage, better than a mute worker.
+
+    Also used by ``agent_turn`` to rebuild the spawn tool cage from the
+    child's stored spawn contract on follow-up turns.
     """
     if not names:
         return None
@@ -470,6 +495,42 @@ def _summarize(result: Any) -> str:
             if isinstance(value, str) and value.strip():
                 return value
     return ""
+
+
+def _thinking_text(result: Any) -> str:
+    """Display-only reasoning from a child loop result."""
+    from motet.core.orchestration.turn.complete import extract_thinking_text
+
+    return extract_thinking_text(result) or ""
+
+
+def _tool_summaries(result: Any) -> List[Dict[str, Any]]:
+    """Display-only tool name/status/preview rows from a child loop result."""
+    from motet.core.orchestration.turn.complete import extract_tool_summaries
+    from motet.core.reasoning.react.loop_results import summarize_tool_results
+
+    stored = extract_tool_summaries(result)
+    if stored:
+        return stored
+    if not isinstance(result, dict):
+        return []
+    candidates: List[Any] = [result]
+    for key in ("data", "result"):
+        nested = result.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for candidate in candidates:
+        rows = summarize_tool_results(candidate.get("tool_results") or [])
+        if rows:
+            return rows
+    return []
+
+
+def _cost_usd(result: Any) -> Optional[float]:
+    """Priced loop cost from a child result, or None when unpriced."""
+    from motet.core.orchestration.turn.complete import extract_turn_cost
+
+    return extract_turn_cost(result)
 
 
 def _stop_reason(result: Any) -> str:
@@ -598,7 +659,8 @@ def run_spawn_agents(params: Dict[str, Any]) -> Dict[str, Any]:
         ``text`` is the same write-ups as prose for the parent
         observation. A copy is stored on ``result.artifact_id`` when the
         store is available so an 8k clip still has a pointer. Child
-        snapshot-tool cache entries are in ``meta`` for the parent loop
+        snapshot-tool cache entries and parent card pointers
+        (``meta.spawn_children``) are in ``meta`` for the parent loop
         to inherit. The call errors when no child answered, so an
         all-empty fan-out cannot read as findings.
     """
@@ -664,7 +726,7 @@ def run_spawn_agents(params: Dict[str, Any]) -> Dict[str, Any]:
     schemas_by_task = [
         None
         if wants_discovery[index]
-        else _resolve_child_tool_schemas(motet, allowed_by_task[index])
+        else resolve_child_tool_schemas(motet, allowed_by_task[index])
         for index in range(len(tasks))
     ]
     child_filters = [
@@ -679,6 +741,46 @@ def run_spawn_agents(params: Dict[str, Any]) -> Dict[str, Any]:
     parent_agent_id = metadata.get("agent_id") or "agent"
     stream_key = getattr(motet, "stream_key", None)
     parent_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    parent_cid = str(getattr(motet, "conversation_id", None) or "").strip()
+    children_by_index: List[Any] = []
+    if parent_cid:
+        from motet.core.conversations.children import (
+            create_child_conversation,
+            parent_registry_scope,
+        )
+
+        registry_agent, surface_id = parent_registry_scope(motet, parent_agent_id)
+        for index, task in enumerate(tasks):
+            children_by_index.append(
+                create_child_conversation(
+                    motet,
+                    instruction=task.instruction,
+                    registry_agent_id=registry_agent,
+                    pointer_agent_id=spawn_child_id(parent_agent_id, index),
+                    surface_id=surface_id,
+                    kind="spawn",
+                    turn_agent_id=CORE_SUBAGENT_ID,
+                    spawn_contract={
+                        "discover": wants_discovery[index],
+                        "tools": list(allowed_by_task[index]),
+                        "tool_filter_metadata": child_filters[index],
+                    },
+                )
+            )
+    else:
+        children_by_index = [None] * len(tasks)
+
+    child_cids: List[str] = [
+        child.conversation_id if child is not None else "" for child in children_by_index
+    ]
+    early_pointers: List[Dict[str, Any]] = [
+        child.pointer for child in children_by_index if child is not None
+    ]
+    brief_written: Set[str] = {
+        child.conversation_id
+        for child in children_by_index
+        if child is not None and child.brief_written
+    }
 
     emit_reasoning_event(
         motet,
@@ -688,6 +790,7 @@ def run_spawn_agents(params: Dict[str, Any]) -> Dict[str, Any]:
         action="spawn_agents",
         observation="; ".join(t.instruction[:80] for t in tasks),
         stream_key=stream_key,
+        spawn_children=early_pointers or None,
     )
 
     undeclared = sum(1 for names in allowed_by_task if not names)
@@ -703,48 +806,58 @@ def run_spawn_agents(params: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     child_ids = [spawn_child_id(parent_agent_id, index) for index in range(len(tasks))]
-    calls = [
-        (
-            agent_loop,
-            AgentData(
-                agent_id=child_ids[index],
-                parent_agent_id=parent_agent_id,
-                use_task_stream=True,
-                base_stream_key=stream_key,
-                metadata={
-                    **parent_metadata,
-                    "agent_id": child_ids[index],
-                    "parent_agent_id": parent_agent_id,
-                },
-                input=task.instruction,
-                # Worker brief only. The parent transcript would make a child
-                # re-answer the user's original question; an empty history would
-                # let the loop inject the Motet assistant fallback (MUST fetch
-                # via http_get_browser). Same string on every sibling so the
-                # system prefix stays cacheable; declared tools are already on
-                # required_tools.
-                conversation_history=_child_conversation_history(
-                    discover=wants_discovery[index]
+    rails = _subagent_loop_rails()
+    calls = []
+    for index, task in enumerate(tasks):
+        child_data = AgentData(
+            agent_id=child_ids[index],
+            parent_agent_id=parent_agent_id,
+            use_task_stream=True,
+            base_stream_key=stream_key,
+            metadata={
+                **parent_metadata,
+                "agent_id": child_ids[index],
+                "parent_agent_id": parent_agent_id,
+                **(
+                    {
+                        "parent_conversation_id": children_by_index[index].parent_conversation_id,
+                        "root_conversation_id": children_by_index[index].root_conversation_id,
+                    }
+                    if children_by_index[index] is not None
+                    else {}
                 ),
-                tool_filter_metadata=child_filters[index],
-                # None keeps discovery. A list (even of one schema) is the cage:
-                # the loop will not rebuild a shortlist or persist it onto the
-                # parent conversation.
-                tools=schemas_by_task[index],
-                max_iterations=SUBAGENT_MAX_ITERATIONS,
-                max_tools=SUBAGENT_MAX_TOOLS,
-                max_cost_usd=SUBAGENT_MAX_COST_USD,
-                max_prompt_tokens=SUBAGENT_MAX_PROMPT_TOKENS,
-                max_tool_time_ms=SUBAGENT_MAX_TOOL_TIME_MS,
-                model_provider=metadata.get("model_provider") or DEFAULT_MODEL_PROVIDER,
-                model_name=metadata.get("model_name") or DEFAULT_MODEL_NAME,
-                model_profile_name=metadata.get("model_profile_name"),
-                enable_thinking=bool(metadata.get("enable_thinking", False)),
-                reasoning_effort=metadata.get("reasoning_effort") or "medium",
+            },
+            input=task.instruction,
+            # Worker brief only. The parent transcript would make a child
+            # re-answer the user's original question; an empty history would
+            # let the loop inject the Motet assistant fallback (MUST fetch
+            # via http_get_browser). Same string on every sibling so the
+            # system prefix stays cacheable; declared tools are already on
+            # required_tools.
+            conversation_history=_child_conversation_history(
+                discover=wants_discovery[index]
             ),
+            tool_filter_metadata=child_filters[index],
+            # None keeps discovery. A list (even of one schema) is the cage:
+            # the loop will not rebuild a shortlist or persist it onto the
+            # parent conversation.
+            tools=schemas_by_task[index],
+            max_iterations=rails["max_iterations"],
+            max_tools=rails["max_tools"],
+            max_cost_usd=rails["max_cost_usd"],
+            max_prompt_tokens=rails["max_prompt_tokens"],
+            max_tool_time_ms=rails["max_tool_time_ms"],
+            model_provider=metadata.get("model_provider") or DEFAULT_MODEL_PROVIDER,
+            model_name=metadata.get("model_name") or DEFAULT_MODEL_NAME,
+            model_profile_name=metadata.get("model_profile_name"),
+            enable_thinking=bool(metadata.get("enable_thinking", False)),
+            reasoning_effort=metadata.get("reasoning_effort") or "medium",
         )
-        for index, task in enumerate(tasks)
-    ]
+        child_cid = child_cids[index]
+        if child_cid:
+            calls.append(agent_loop(data=child_data, conversation_id=child_cid))
+        else:
+            calls.append((agent_loop, child_data))
 
     try:
         results = motet.join(calls, fail_fast=False)
@@ -811,17 +924,61 @@ def run_spawn_agents(params: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         succeeded += 1
-        entries.append(
-            {
-                "task": task.instruction,
-                "status": "success",
-                "response": writeup,
-                "tools_used": _tools_used(raw),
-                "stop_reason": stop_reason,
-            }
-        )
+        success_row: Dict[str, Any] = {
+            "task": task.instruction,
+            "status": "success",
+            "response": writeup,
+            "tools_used": _tools_used(raw),
+            "stop_reason": stop_reason,
+            "thinking_text": _thinking_text(raw),
+            "tool_summaries": _tool_summaries(raw),
+            "cost_usd": _cost_usd(raw),
+        }
+        if index < len(child_cids) and child_cids[index]:
+            success_row["child_conversation_id"] = child_cids[index]
+        entries.append(success_row)
 
-    _persist_child_transcripts(motet, str(parent_agent_id), entries)
+    pointers: List[Dict[str, Any]] = []
+    if parent_cid:
+        persisted_by_cid: Dict[str, Dict[str, Any]] = {
+            str(pointer.get("child_conversation_id") or "").strip(): pointer
+            for pointer in _persist_spawn_children(
+                motet,
+                str(parent_agent_id),
+                tasks,
+                entries,
+                child_cids,
+                brief_written=brief_written,
+            )
+        }
+        from motet.core.conversations.children import child_pointer
+
+        for index, entry in enumerate(entries):
+            if entry.get("status") != "success":
+                continue
+            child_cid = str(entry.get("child_conversation_id") or "").strip()
+            if not child_cid:
+                continue
+            persisted = persisted_by_cid.get(child_cid)
+            if persisted:
+                pointers.append(persisted)
+                continue
+            # Persist failed for this child (fail-soft). Synthesize the card
+            # anyway so the parent turn matches the registered sidebar row.
+            instruction = ""
+            if index < len(tasks):
+                instruction = str(getattr(tasks[index], "instruction", "") or "").strip()
+            pointers.append(
+                child_pointer(
+                    child_cid=child_cid,
+                    agent_id=spawn_child_id(str(parent_agent_id), index),
+                    title=instruction or str(entry.get("task") or ""),
+                    preview=str(entry.get("response") or ""),
+                    cost_usd=entry.get("cost_usd"),
+                    thinking_text=str(entry.get("thinking_text") or "") or None,
+                    tool_summaries=entry.get("tool_summaries") or None,
+                )
+            )
 
     emit_reasoning_event(
         motet,
@@ -881,15 +1038,18 @@ def run_spawn_agents(params: Dict[str, Any]) -> Dict[str, Any]:
     if artifact_id:
         payload["artifact_id"] = artifact_id
 
+    envelope_meta: Dict[str, Any] = {
+        "task_count": len(tasks),
+        "succeeded": succeeded,
+        "incomplete": incomplete,
+        "snapshot_cache": snapshot_cache,
+        "snapshot_signatures": snapshot_signatures,
+    }
+    if pointers:
+        envelope_meta["spawn_children"] = pointers
     envelope = ok(
         payload,
-        meta={
-            "task_count": len(tasks),
-            "succeeded": succeeded,
-            "incomplete": incomplete,
-            "snapshot_cache": snapshot_cache,
-            "snapshot_signatures": snapshot_signatures,
-        },
+        meta=envelope_meta,
     )
     # Loop extract reads ``text``; without it the parent sees a JSON dump
     # of the rows and treats a long fan-in as something it must re-fetch.
@@ -940,15 +1100,10 @@ def register(registry: ToolRegistry) -> None:
 __all__ = [
     "INCOMPLETE_STOP_REASONS",
     "MAX_FANOUT_WIDTH",
-    "SUBAGENT_MAX_COST_USD",
-    "SUBAGENT_MAX_ITERATIONS",
-    "SUBAGENT_MAX_PROMPT_TOKENS",
-    "SUBAGENT_MAX_TOOL_TIME_MS",
-    "SUBAGENT_SYSTEM_PROMPT",
-    "SUBAGENT_DISCOVERY_PROMPT",
-    "SUBAGENT_MAX_TOOLS",
     "SpawnAgentsParams",
     "SpawnTask",
     "register",
+    "resolve_child_tool_schemas",
     "run_spawn_agents",
+    "spawn_child_id",
 ]

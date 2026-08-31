@@ -477,14 +477,14 @@ Motet encrypts sensitive data at rest in Redis using a phased encryption strateg
 
 ```bash
 # Attacker gains Redis access
-redis-cli GET "imf:cmd:abc123:data"
+redis-cli GET "acme:cmd:data:abc123"
 # Returns: {"api_key": "sk-secret-xyz", "user_data": {...}}
 ```
 
 **With encryption**, data is protected even if Redis is compromised:
 
 ```bash
-redis-cli GET "imf:cmd:abc123:data"
+redis-cli GET "acme:cmd:data:abc123"
 # Returns: {"encrypted": true, "encrypted_data": "...", "dek": {...}}
 # Useless without tenant encryption key
 ```
@@ -990,4 +990,4 @@ override.
 
 ---
 
-**Last Updated**: 2026-08-21
+**Last Updated**: 2026-08-29

@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Shared helper to emit reasoning_step events for UI display and observability.
@@ -53,6 +53,7 @@ def emit_reasoning_event(
     observation: Optional[str] = None,
     stream_key: Optional[str] = None,
     goal: Optional[str] = None,
+    spawn_children: Optional[list] = None,
 ) -> None:
     """
     Emit a reasoning step event for UI display and observability (ADR-0050).
@@ -88,6 +89,8 @@ def emit_reasoning_event(
         }
         if goal is not None and goal:
             event_data["goal"] = goal[:500] + "..." if len(goal) > 500 else goal
+        if spawn_children:
+            event_data["spawn_children"] = spawn_children
 
         # Publish to EventBus for system-wide observability
         motet.publish_event(event_data)

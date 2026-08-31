@@ -240,11 +240,11 @@ Conversations are chat sessions for a principal in a tenant. The API lists, retr
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/conversations` | List conversations (id, title, created_at, updated_at) |
-| GET | `/api/v1/conversations/{id}` | Get conversation details (history, counts, optional summary) |
+| GET | `/api/v1/conversations` | List conversations (id, title, created_at, updated_at, optional agent_id, surface_id, turn_agent_id, and `parent_conversation_id` — null for root chats). Spawn children stay listed under the parent chat agent, set `turn_agent_id` to `core.subagent`, and set `parent_conversation_id` to the parent chat |
+| GET | `/api/v1/conversations/{id}` | Get conversation details (history, counts, optional summary). History items may include `cost_usd` and `spawn_children` (child thinking, tool summaries, and cost when stored on the child); the conversation may include a priced `cost_usd` rollup, `turn_agent_id` when follow-up uses a different agent than the list scope, and `parent_conversation_id` (null for root chats) |
 | PATCH | `/api/v1/conversations/{id}` | Rename conversation (body: `{"title": "..."}`) |
 | POST | `/api/v1/conversations/{id}/clear` | Clear conversation (registry + memory/vector) |
-| DELETE | `/api/v1/conversations/{id}` | Delete conversation (same as clear) |
+| DELETE | `/api/v1/conversations/{id}` | Delete conversation and isolated descendants (same as clear) |
 
 New conversations are created implicitly when starting a chat with a new conversation ID; no separate create endpoint.
 
@@ -300,6 +300,7 @@ Cost tracking and budget management. All endpoints require authentication; costs
 | GET | `/api/v1/cost/budget` | Get budget configuration (daily/monthly limits, alert threshold) |
 | PUT | `/api/v1/cost/budget` | Update budget configuration (admin or budget_admin role). Body: limits, alert_threshold_pct |
 | GET | `/api/v1/cost/events` | Recent cost events from Redis stream. Query: `count`, `start_id`, `tenant_id` |
+| GET | `/api/v1/cost/conversation/{conversation_id}` | Estimated USD for one conversation. Query: `include_children` (default true). `cost_usd` omitted when unknown |
 
 ### Querying across tenants
 
@@ -414,7 +415,7 @@ object is also accepted and coerced to a one-element list. Each tool/workflow
 must exist and must be permitted by the agent's tool filter; an unknown or
 excluded tool fails the turn. Omit the field for normal model-driven turns.
 
-The SSE stream emits events including: `token`, `thinking`, `turn`, `step`, `reasoning_step`, `reasoning_meta`, `reasoning`, `conversation_analyzed`, `workflow_step`, `tool_execution_started`, `tool_execution_completed`, `tool_execution_failed`, `agent_turn_start`, `agent_turn_complete`, `auth_required`, `end`, `error`. All events may include `agent_id` for multi-agent attribution; nested loops also include `parent_agent_id`. See [Streaming Responses](./13-streaming-responses.md) for full event schemas.
+The SSE stream emits events including: `token`, `thinking`, `usage`, `turn`, `step`, `reasoning_step`, `reasoning_meta`, `reasoning`, `conversation_analyzed`, `workflow_step`, `tool_execution_started`, `tool_execution_completed`, `tool_execution_failed`, `agent_turn_start`, `agent_turn_complete`, `auth_required`, `end`, `error`. All events may include `agent_id` for multi-agent attribution; nested loops also include `parent_agent_id`. See [Streaming Responses](./13-streaming-responses.md) for full event schemas.
 
 ### WebSocket
 
@@ -811,6 +812,6 @@ CLI commands typically call the same backend as the REST API. Configuration (bas
 
 ---
 
-**Last Updated**: 2026-08-25
+**Last Updated**: 2026-08-29
 
 **Ready for configuration?** Continue to [Configuration Reference](./29-configuration-reference.md).

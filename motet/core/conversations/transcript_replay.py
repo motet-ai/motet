@@ -5,13 +5,19 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-30
 
 Description:
     Helpers for replaying canonical conversation_transcript memories into
     Message lists: get_conversation_history_from_transcripts (used by prepare_context
     and conversation_get), merge_conversation_history (dedupe merge for prepare_context),
     and message_to_history_item (API history item shape for conversation_get).
+    Display-only ``thinking_text``, ``tool_summaries``, ``cost_usd``, and
+    ``spawn_children`` on a transcript row are copied onto the last assistant
+    message metadata for GET. Rail steps come from that row's stored
+    ``tool_summaries`` (empty means this agent ran no tools). prepare_context
+    strips these so the next model turn does not see them as content or extra
+    tool messages.
 
     Before rendering, offloaded tool-call arguments are hydrated from
     ArtifactStore so provider replay receives unmodified valid JSON.
@@ -52,8 +58,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import structlog
-from typing import TYPE_CHECKING, Any, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 logger = structlog.get_logger(__name__)
 
@@ -61,6 +68,147 @@ if TYPE_CHECKING:
     from ..types import Message
 else:
     Message = Any
+
+
+def _display_thinking_text(msg: Any) -> str:
+    """thinking_text stored on message metadata for conversation GET."""
+    meta = getattr(msg, "metadata", None) or {}
+    if not isinstance(meta, dict):
+        return ""
+    raw = meta.get("thinking_text")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _stamp_thinking_on_assistant(msgs: List[Any], thinking_text: str) -> None:
+    """Attach display thinking to the last assistant message of one transcript row."""
+    if not thinking_text:
+        return
+    for msg in reversed(msgs):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        meta = dict(getattr(msg, "metadata", None) or {})
+        meta["thinking_text"] = thinking_text
+        msg.metadata = meta
+        return
+
+
+_TOOL_SUMMARY_PREVIEW_MAX = 160
+
+
+def _preview_from_tool_output(output: Any) -> Optional[str]:
+    """One-line preview from a stored tool result. No argument blobs."""
+    if isinstance(output, dict):
+        raw = output.get("preview")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:_TOOL_SUMMARY_PREVIEW_MAX]
+        err = output.get("error")
+        if isinstance(err, str) and err.strip():
+            return err.strip()[:_TOOL_SUMMARY_PREVIEW_MAX]
+        return None
+    if isinstance(output, str) and output.strip():
+        return output.strip()[:_TOOL_SUMMARY_PREVIEW_MAX]
+    return None
+
+
+def project_tool_summaries_from_items(items: List[Any]) -> List[Dict[str, str]]:
+    """Short tool rows from stored ToolCallRequest / ToolCallResult items."""
+    from motet.core.types import ToolCallRequest, ToolCallResult
+
+    out: List[Dict[str, str]] = []
+    pending_names: Dict[str, str] = {}
+    for item in items or []:
+        if isinstance(item, ToolCallRequest):
+            pending_names[str(item.call_id)] = _display_name_from_tool_call_request(item)
+            continue
+        if not isinstance(item, ToolCallResult):
+            continue
+        name = str(item.tool_name or "").strip() or pending_names.get(str(item.call_id), "")
+        if name == "core.tool_call":
+            name = pending_names.get(str(item.call_id), name)
+        if not name:
+            continue
+        status = "error" if item.is_error else "success"
+        row: Dict[str, str] = {"tool_name": name, "status": status}
+        preview = None
+        if item.is_error:
+            preview = (item.error_message or "").strip()[:_TOOL_SUMMARY_PREVIEW_MAX] or None
+        if not preview:
+            preview = _preview_from_tool_output(item.output)
+        if preview:
+            row["preview"] = preview
+        out.append(row)
+    return out
+
+
+def _display_name_from_tool_call_request(item: Any) -> str:
+    """Prefer the tool ``core.tool_call`` dispatched, not the dispatcher name."""
+    outer = str(getattr(item, "tool_name", None) or "").strip()
+    if outer != "core.tool_call":
+        return outer
+    raw_args = getattr(item, "arguments", None)
+    if not isinstance(raw_args, dict):
+        raw_json = getattr(item, "arguments_json", None)
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                parsed = json.loads(raw_json)
+            except json.JSONDecodeError:
+                parsed = None
+            raw_args = parsed if isinstance(parsed, dict) else {}
+        else:
+            raw_args = {}
+    inner = raw_args.get("tool_name")
+    if isinstance(inner, str) and inner.strip():
+        return inner.strip()
+    return outer
+
+
+def _coerce_row_tool_summaries(value: Any) -> List[Dict[str, Any]]:
+    """Stored summaries, or empty when the row has none."""
+    from motet.core.conversations.transcript_storage import coerce_tool_summaries
+
+    return coerce_tool_summaries(value)
+
+
+def _stamp_tool_summaries_on_assistant(msgs: List[Any], summaries: List[Dict[str, Any]]) -> None:
+    """Attach display tool summaries to the last assistant of one transcript row."""
+    if not summaries:
+        return
+    for msg in reversed(msgs):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        meta = dict(getattr(msg, "metadata", None) or {})
+        meta["tool_summaries"] = summaries
+        msg.metadata = meta
+        return
+
+
+def _stamp_cost_on_assistant(msgs: List[Any], cost_usd: Optional[float]) -> None:
+    """Attach priced loop cost to the last assistant of one transcript row."""
+    from motet.core.conversations.transcript_storage import coerce_cost_usd
+
+    amount = coerce_cost_usd(cost_usd)
+    if amount is None:
+        return
+    for msg in reversed(msgs):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        meta = dict(getattr(msg, "metadata", None) or {})
+        meta["cost_usd"] = amount
+        msg.metadata = meta
+        return
+
+
+def _stamp_spawn_children_on_assistant(msgs: List[Any], spawn_children: List[Dict[str, Any]]) -> None:
+    """Attach spawn card pointers to the last assistant of one transcript row."""
+    if not spawn_children:
+        return
+    for msg in reversed(msgs):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        meta = dict(getattr(msg, "metadata", None) or {})
+        meta["spawn_children"] = spawn_children
+        msg.metadata = meta
+        return
 
 
 def _message_has_tool_calls(msg: Any) -> bool:
@@ -230,6 +378,18 @@ def get_conversation_history_from_transcripts(
                 provider_name=provider_name,
                 turn_agent_id=turn_aid_str or None,
             )
+            row_thinking = str(md.get("thinking_text") or "").strip()
+            _stamp_thinking_on_assistant(msgs, row_thinking)
+            row_summaries = (
+                _coerce_row_tool_summaries(md.get("tool_summaries"))
+                if "tool_summaries" in md
+                else []
+            )
+            _stamp_tool_summaries_on_assistant(msgs, row_summaries)
+            _stamp_cost_on_assistant(msgs, md.get("cost_usd"))
+            from motet.core.conversations.transcript_storage import coerce_spawn_children
+
+            _stamp_spawn_children_on_assistant(msgs, coerce_spawn_children(md.get("spawn_children")))
             for msg in msgs:
                 role = getattr(msg, "role", None)
                 msg_agent_id = str(getattr(msg, "agent_id", "") or "").strip()
@@ -346,9 +506,9 @@ def merge_conversation_history(
 
 def message_to_history_item(msg: Any, created_at: Any) -> dict | None:
     """
-    Convert a Message and created_at to the API history item dict (content, role, created_at, attachments, agent_id, parent_agent_id).
+    Convert a Message and created_at to the API history item dict (content, role, created_at, attachments, agent_id, parent_agent_id, thinking_text, tool_summaries, cost_usd, spawn_children).
     Returns None for assistant messages that are only tool-call placeholders (empty content + tool_calls)
-    so the UI can skip them.
+    and have no display thinking, so the UI can skip them.
     """
     created_str = (
         created_at.isoformat()
@@ -433,10 +593,28 @@ def message_to_history_item(msg: Any, created_at: Any) -> dict | None:
     parent_aid = getattr(msg, "parent_agent_id", None)
     if parent_aid:
         item["parent_agent_id"] = parent_aid
+    thinking_text = _display_thinking_text(msg)
+    if thinking_text:
+        item["thinking_text"] = thinking_text
+    meta = getattr(msg, "metadata", None) or {}
+    summaries = _coerce_row_tool_summaries(meta.get("tool_summaries") if isinstance(meta, dict) else None)
+    if summaries:
+        item["tool_summaries"] = summaries
+    from motet.core.conversations.transcript_storage import coerce_cost_usd
+
+    cost_usd = coerce_cost_usd(meta.get("cost_usd") if isinstance(meta, dict) else None)
+    if cost_usd is not None:
+        item["cost_usd"] = cost_usd
+    from motet.core.conversations.transcript_storage import coerce_spawn_children
+
+    spawn_children = coerce_spawn_children(meta.get("spawn_children") if isinstance(meta, dict) else None)
+    if spawn_children:
+        item["spawn_children"] = spawn_children
     if (
         item["role"] == "assistant"
         and not (item.get("content") or "").strip()
         and _message_has_tool_calls(msg)
+        and not thinking_text
     ):
         return None
     return item
@@ -446,4 +624,5 @@ __all__ = [
     "get_conversation_history_from_transcripts",
     "merge_conversation_history",
     "message_to_history_item",
+    "project_tool_summaries_from_items",
 ]

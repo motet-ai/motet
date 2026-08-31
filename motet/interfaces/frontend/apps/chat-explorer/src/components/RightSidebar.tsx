@@ -5,23 +5,27 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-24
+ * Last Modified: 2026-08-30
  *
  * Description:
- *     Collapsible right sidebar providing observability into the AI reasoning process.
- *     When SSE frames include agent_id, Reasoning shows one subsection per agent;
- *     a single agent uses the same layout as before (no extra chrome).
+ *     Collapsible right sidebar for tool and workflow steps. When SSE frames
+ *     include agent_id, Reasoning shows one subsection per agent; a single
+ *     agent uses the same layout as before (no extra chrome). Provider
+ *     thinking text is not shown here — it stays on the chat bubble or spawn
+ *     card. An agent accordion appears when that agent starts thinking and
+ *     shows a Thinking spinner while the trace is still in progress.
  *
  * Dependencies:
- *     - @ant-design/x: ThoughtChain, Think
+ *     - @ant-design/x: ThoughtChain
  *     - Ant Design: Button, Card, Collapse, Layout/Sider, Space, Tree, Typography
  */
 import { useState, useEffect, useMemo } from "react";
 import { Button, Card, Collapse, Layout, Space, Tree, Typography } from "antd";
-import { MenuUnfoldOutlined, MenuFoldOutlined } from "@ant-design/icons";
-import { ThoughtChain, Think, type ThoughtChainItemType } from "@ant-design/x";
+import { MenuUnfoldOutlined, MenuFoldOutlined, LoadingOutlined } from "@ant-design/icons";
+import { ThoughtChain, type ThoughtChainItemType } from "@ant-design/x";
 import { jsonToTreeData, getEventRootLabel } from "../utils";
 import { type AgentReasoningPanel, DEFAULT_STREAM_AGENT_KEY } from "../types";
+import { formatCostUsd } from "@motet/ui-common";
 
 const { Sider } = Layout;
 const { Text } = Typography;
@@ -30,7 +34,7 @@ interface RightSidebarProps {
   token: unknown;
   collapsed: boolean;
   setCollapsed: (collapsed: boolean) => void;
-  /** Per-agent reasoning (thinking + steps); one entry when only one stream */
+  /** Per-agent step chain; one entry when only one stream */
   reasoningPanels: AgentReasoningPanel[];
   /** Selected chat agent (used to seed initial accordion panel before first stream frames). */
   selectedAgentId?: string;
@@ -39,21 +43,39 @@ interface RightSidebarProps {
   errors: string[];
   watchEventsEnabled: boolean;
   showErrorsEnabled: boolean;
+  /** True while the current turn is still streaming. */
+  isRequesting?: boolean;
+  /** True when this chat already has an assistant reply (direct or with tools). */
+  hasAssistantReply?: boolean;
+  /** Show priced agent cost under each step list. */
+  showAgentCost?: boolean;
+}
+
+function emptyStepsLabel(isRequesting: boolean, hasAssistantReply: boolean): string {
+  if (isRequesting) return "Responding Directly";
+  if (hasAssistantReply) return "Responded Directly";
+  return "No tools used yet";
 }
 
 function ReasoningPanelBody({
   panel,
-  headingMode
+  headingMode,
+  emptyLabel,
+  showAgentCost,
 }: {
   panel: AgentReasoningPanel;
   /** `full`: show registry name + id (single-panel). `none`: title is on Collapse header only. */
   headingMode: "full" | "none";
+  emptyLabel: string;
+  showAgentCost: boolean;
 }) {
   const showHeading =
     headingMode === "full" && panel.agentKey !== DEFAULT_STREAM_AGENT_KEY;
+  const agentCost = showAgentCost ? formatCostUsd(panel.costUsd) : null;
+  const hasSteps = panel.thoughtChainItems.length > 0;
 
   return (
-    <Space orientation="vertical" style={{ width: "100%" }} size="middle">
+    <div className="reasoning-panel-body">
       {showHeading && (
         <div style={{ marginBottom: 4 }}>
           <Text strong style={{ fontSize: 14 }}>
@@ -64,33 +86,25 @@ function ReasoningPanelBody({
           </Text>
         </div>
       )}
-      {panel.thinkingText != null && panel.thinkingText.length > 0 && (
-        <div>
-          <Text strong style={{ display: "block", marginBottom: 8 }}>
-            Thinking
-          </Text>
-          <Think
-            title={panel.thinkingComplete ? "Done thinking" : "Thinking..."}
-            loading={!panel.thinkingComplete}
-            defaultExpanded={true}
-          >
-            {panel.thinkingText}
-          </Think>
-        </div>
-      )}
-      <div>
-        <Text strong style={{ display: "block", marginBottom: 8 }}>
-          Steps
+      {panel.thinkingActive && (
+        <Text type="secondary" className="reasoning-thinking-indicator">
+          <LoadingOutlined spin aria-hidden />
+          Thinking
         </Text>
-        {panel.thoughtChainItems.length === 0 ? (
-          <Text type="secondary">No steps emitted</Text>
-        ) : (
-          <div style={{ maxHeight: 280, overflow: "auto" }}>
-            <ThoughtChain items={panel.thoughtChainItems as ThoughtChainItemType[]} line="solid" />
-          </div>
-        )}
-      </div>
-    </Space>
+      )}
+      {hasSteps ? (
+        <div className="reasoning-panel-steps">
+          <ThoughtChain items={panel.thoughtChainItems as ThoughtChainItemType[]} line="solid" />
+        </div>
+      ) : panel.thinkingActive ? null : (
+        <Text type="secondary">{emptyLabel}</Text>
+      )}
+      {agentCost && (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {agentCost}
+        </Text>
+      )}
+    </div>
   );
 }
 
@@ -104,7 +118,10 @@ export function RightSidebar({
   eventBus,
   errors,
   watchEventsEnabled,
-  showErrorsEnabled
+  showErrorsEnabled,
+  isRequesting = false,
+  hasAssistantReply = false,
+  showAgentCost = true,
 }: RightSidebarProps) {
   const t = token as { colorBgLayout?: string; colorBorder?: string; colorBgContainer?: string };
 
@@ -116,7 +133,9 @@ export function RightSidebar({
     thinkingText: null,
     thinkingComplete: false
   };
-  const effectivePanels = reasoningPanels.length > 0 ? reasoningPanels : [seededPanel];
+  const hasTurnPanel = reasoningPanels.length > 0;
+  const effectivePanels = hasTurnPanel ? reasoningPanels : [seededPanel];
+  const emptyLabel = emptyStepsLabel(isRequesting, hasAssistantReply || hasTurnPanel);
 
   const [expandedKeys, setExpandedKeys] = useState<string[]>(() =>
     effectivePanels.map((p) => p.agentKey)
@@ -153,7 +172,14 @@ export function RightSidebar({
               )}
             </span>
           ),
-          children: <ReasoningPanelBody panel={p} headingMode="none" />
+          children: (
+            <ReasoningPanelBody
+              panel={p}
+              headingMode="none"
+              emptyLabel={emptyLabel}
+              showAgentCost={showAgentCost}
+            />
+          )
         }))}
       />
     );

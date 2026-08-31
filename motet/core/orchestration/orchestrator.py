@@ -5,14 +5,15 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-29
 
 Description:
     Distributed orchestrator entrypoint used by the stack and chat API. It builds
     turn commands, executes them through the distributed invoker, and streams
     events/tokens back to callers via a dedicated Redis stream consumer.
     Forwards the terminal `suspended` event and ends
-    the stream on it, mirroring `end`/`error`.
+    the stream on it, mirroring `end`/`error`. Forwards ``usage`` after each
+    priced model fold (running token envelope plus optional ``cost_usd``).
 
 Dependencies:
     - Distributed command system and global invoker
@@ -40,6 +41,7 @@ from pydantic import BaseModel
 from enum import Enum
 import structlog
 
+from motet.core.reasoning.react.loop_results import priced_cost_usd
 from motet.core.types import Message
 from motet.core.constants import DEFAULT_REDIS_URL
 from motet.core.commands.distributed import DistributedCommand
@@ -315,6 +317,22 @@ class DistributedOrchestrator:
                                 {"event": "thinking", "text": text, "is_complete": is_complete},
                                 fields,
                             )
+
+                        elif event == "usage":
+                            usage_data: Dict[str, Any] = dict(payload or {})
+                            if not usage_data and isinstance(fields, dict):
+                                for key, value in fields.items():
+                                    if key in ("event", b"event", "_envelope", b"_envelope"):
+                                        continue
+                                    decoded_key = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                                    decoded_value = value.decode("utf-8") if isinstance(value, bytes) else value
+                                    usage_data[decoded_key] = decoded_value
+                            cost = priced_cost_usd(usage_data.get("cost_usd"))
+                            if cost is not None:
+                                usage_data["cost_usd"] = cost
+                            else:
+                                usage_data.pop("cost_usd", None)
+                            yield _with_stream_agent_id({"event": "usage", **usage_data}, fields)
 
                         elif event == "tool_call_delta":
                             # Argument fragments for a tool call still being generated.

@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-29
 
 Description:
     Tool execution, dedup, prefilled-tool-call, and fast-path helpers for the
@@ -89,7 +89,13 @@ from .loop_observations import (
     extract_text_from_mcp_result,
     format_workflow_steps,
 )
-from .loop_results import accumulate_usage, build_loop_result
+from .loop_results import (
+    accumulate_usage,
+    build_loop_result,
+    duration_ms_from_payload,
+    extend_spawn_children,
+    join_thinking_text,
+)
 from .loop_skills import ARTIFACT_VIEW_TOOL_NAMES, build_artifact_view_sidecar
 
 logger = structlog.get_logger(__name__)
@@ -213,6 +219,14 @@ def _results_by_call_id(tool_results: List[Dict[str, Any]]) -> Dict[str, Dict[st
     return {
         str(r.get("tool_call_id")): r for r in tool_results if r.get("tool_call_id") is not None
     }
+
+
+def _with_duration(row: Dict[str, Any], payload: Any) -> Dict[str, Any]:
+    """Copy tool_execution wall time onto a loop tool_results row when present."""
+    duration_ms = duration_ms_from_payload(payload)
+    if duration_ms is not None:
+        row["duration_ms"] = duration_ms
+    return row
 
 
 def _extract_passthrough_from_workflow_result(
@@ -766,7 +780,9 @@ def _spawn_meta_from_payload(payload: Any) -> Optional[Dict[str, Any]]:
                 continue
             meta = parsed
         if isinstance(meta, dict) and (
-            "snapshot_cache" in meta or "snapshot_signatures" in meta
+            "snapshot_cache" in meta
+            or "snapshot_signatures" in meta
+            or "spawn_children" in meta
         ):
             return meta
     return None
@@ -793,6 +809,22 @@ def _inherit_spawn_snapshot_cache(data: AgenticLoopData, payload: Any) -> None:
         logger.info(
             "agentic_loop_inherited_spawn_snapshot_cache",
             inherited=inherited,
+            stream_key=data.stream_key,
+        )
+
+
+def _inherit_spawn_children(data: AgenticLoopData, payload: Any) -> None:
+    """Accumulate parent card pointers from a spawn_agents tool envelope."""
+    if not isinstance(getattr(data, "spawn_children", None), list):
+        data.spawn_children = []
+    before = len(data.spawn_children)
+    extend_spawn_children(data.spawn_children, payload)
+    added = len(data.spawn_children or []) - before
+    if added:
+        logger.info(
+            "agentic_loop_inherited_spawn_children",
+            added=added,
+            total=len(data.spawn_children),
             stream_key=data.stream_key,
         )
 
@@ -982,7 +1014,16 @@ def execute_tools_and_append_results(
             return ExecuteToolsResult(
                 tool_results=tool_results,
                 auth_response=None,
-                early_return=build_loop_result("No valid tools or workflows to execute.", tool_results, 0, "error", accumulated_usage),
+                early_return=build_loop_result(
+                    "No valid tools or workflows to execute.",
+                    tool_results,
+                    0,
+                    "error",
+                    accumulated_usage,
+                    thinking_text=join_thinking_text(*data.thinking_parts),
+                    tool_summaries=list(data.tool_summaries or []),
+                    spawn_children=list(data.spawn_children or []),
+                ),
             )
 
         # Propagate full chat/model + artifact RAG auth metadata to tool
@@ -1045,12 +1086,12 @@ def execute_tools_and_append_results(
                     error_detail = tool_result_data.get("error", "Unknown error")
                     error_type = tool_result_data.get("error_type", "Error")
                     error_msg = f"Error ({error_type}): {error_detail}"
-                tool_results.append({
+                tool_results.append(_with_duration({
                     "tool_call_id": tool_call["tool_call_id"],
                     "tool_name": tool_call["tool_name"],
                     "result": error_msg,
                     "status": "error",
-                })
+                }, tool_result_data))
                 data.conversation_history.append(Message(
                     role="tool",
                     tool_call_id=tool_call["tool_call_id"],
@@ -1145,12 +1186,12 @@ def execute_tools_and_append_results(
                         raw_result = tool_result_data.get("result", {}) if isinstance(tool_result_data, dict) else tool_result_data
                         result_content = extract_text_from_mcp_result(raw_result)
                     workflow_result = raw_result
-                tool_results.append({
+                tool_results.append(_with_duration({
                     "tool_call_id": tool_call["tool_call_id"],
                     "tool_name": tool_name,
                     "result": workflow_result,
                     "status": "success",
-                })
+                }, tool_result_data))
                 artifact_id = None
                 if isinstance(tool_result_data, dict):
                     raw_aid = tool_result_data.get("artifact_id")
@@ -1174,6 +1215,7 @@ def execute_tools_and_append_results(
                     )
                 if tool_name == "core.spawn_agents":
                     _inherit_spawn_snapshot_cache(data, tool_result_data)
+                    _inherit_spawn_children(data, tool_result_data)
                 if tool_name in ARTIFACT_VIEW_TOOL_NAMES and isinstance(raw_result, dict):
                     sidecar = build_artifact_view_sidecar(
                         tool_call,
@@ -1262,7 +1304,16 @@ def maybe_fast_path_return(
             logger.warning("agentic_loop_fast_path_streaming_failed", error=str(e), exc_info=True)
         motet.stream_event("agentic_loop_complete", reason="deterministic_tool_output",
                            tool_count=len(unique_tool_calls), tool_names=tool_names, stream_key=data.stream_key)
-        return build_loop_result(final_response, tool_results, iterations_used, "stop", accumulated_usage)
+        return build_loop_result(
+            final_response,
+            tool_results,
+            iterations_used,
+            "stop",
+            accumulated_usage,
+            thinking_text=join_thinking_text(*data.thinking_parts),
+            tool_summaries=list(data.tool_summaries or []),
+            spawn_children=list(data.spawn_children or []),
+        )
     except Exception as e:
         logger.warning("agentic_loop_fast_path_failed", error=str(e), error_type=type(e).__name__, exc_info=True)
         return None

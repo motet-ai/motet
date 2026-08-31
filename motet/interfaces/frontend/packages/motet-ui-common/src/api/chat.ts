@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-07
+ * Last Modified: 2026-08-29
  *
  * Description:
  *     Framework-agnostic protocol types and SSE event reducer for the
@@ -13,7 +13,7 @@
  *     can use these types and the reducer to implement a Motet chat client.
  *
  *     The reducer handles all standard Motet SSE event types:
- *       token, thinking, step, workflow_step, reasoning, reasoning_step,
+ *       token, thinking, usage, step, workflow_step, reasoning, reasoning_step,
  *       reasoning_meta, conversation_analyzed, turn, end, auth_required,
  *       error, tool_execution_started, tool_execution_completed,
  *       tool_execution_failed.
@@ -35,6 +35,22 @@
  */
 
 import { DEFAULT_STREAM_AGENT_KEY } from "../types";
+import { asSpawnChildCards } from "../utils/assistantTurn";
+import { knownCostUsd, positiveLoopStep } from "../utils/formatting";
+
+function eventCostUsd(data: unknown): number | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const amount = knownCostUsd((data as { cost_usd?: unknown }).cost_usd);
+  return amount ?? undefined;
+}
+
+function withRunningCost(
+  prev: Record<string, unknown>,
+  data: unknown,
+): Record<string, unknown> {
+  const costUsd = eventCostUsd(data);
+  return costUsd != null ? { ...prev, costUsd } : prev;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROTOCOL TYPES
@@ -139,6 +155,15 @@ export type ChatOutput = {
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Positive loop iteration from an SSE payload or a previous slice. */
+export function loopStepFromUnknown(data: unknown, fallback?: number): number | undefined {
+  if (data && typeof data === "object") {
+    const fromPayload = positiveLoopStep((data as { step?: unknown }).step);
+    if (fromPayload != null) return fromPayload;
+  }
+  return positiveLoopStep(fallback);
+}
+
 /**
  * Resolve the per-agent stream key from an SSE event payload.
  * Falls back to DEFAULT_STREAM_AGENT_KEY when no agent_id is present.
@@ -168,7 +193,24 @@ export function withAgentStream(
   const prevRoot = base.meta || {};
   const streams = { ...(prevRoot.agentStreams || {}) };
   streams[aid] = updater({ ...(streams[aid] || {}) });
-  return { aid, meta: { ...prevRoot, agentStreams: streams } };
+  return { aid, meta: attachSpawnChildConversationIds({ ...prevRoot, agentStreams: streams }) };
+}
+
+/** Copy ``child_conversation_id`` from spawn cards onto the matching agent stream. */
+export function attachSpawnChildConversationIds(meta: Record<string, any>): Record<string, any> {
+  const cards = asSpawnChildCards(meta.spawn_children);
+  if (!cards.length) return meta;
+  const streams = { ...(meta.agentStreams || {}) };
+  let changed = false;
+  for (const card of cards) {
+    const aid = String(card.agent_id || "").trim();
+    if (!aid) continue;
+    const prev = streams[aid] || {};
+    if (prev.childConversationId === card.child_conversation_id) continue;
+    streams[aid] = { ...prev, childConversationId: card.child_conversation_id };
+    changed = true;
+  }
+  return changed ? { ...meta, agentStreams: streams } : meta;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,18 +290,43 @@ export function reduceChatEvent(
       };
     }
 
+    case "usage": {
+      const { aid, meta } = withAgentStream(base, data, (prev) =>
+        withRunningCost(prev, data),
+      );
+      return {
+        message: { ...base, meta, status: "updating" },
+        agentKey: aid,
+      };
+    }
+
     case "step":
     case "workflow_step":
     case "reasoning":
     case "reasoning_step":
     case "reasoning_meta":
     case "conversation_analyzed": {
-      const { aid, meta } = withAgentStream(base, data, (prev) => ({
-        ...prev,
-        [event as string]: data,
-      }));
+      const { aid, meta } = withAgentStream(base, data, (prev) => {
+        const currentStep = loopStepFromUnknown(data, prev.currentStep);
+        return {
+          ...prev,
+          [event as string]: data,
+          ...(currentStep != null ? { currentStep } : {}),
+        };
+      });
+      const spawnChildren =
+        data && typeof data === "object" && Array.isArray((data as { spawn_children?: unknown }).spawn_children)
+          ? (data as { spawn_children: unknown[] }).spawn_children
+          : [];
+      const nextMeta = spawnChildren.length
+        ? attachSpawnChildConversationIds({ ...meta, spawn_children: spawnChildren })
+        : meta;
       return {
-        message: { ...base, meta, status: "updating" },
+        message: {
+          ...base,
+          meta: nextMeta,
+          status: "updating",
+        },
         agentKey: aid,
       };
     }
@@ -281,7 +348,8 @@ export function reduceChatEvent(
       };
     }
 
-    case "end": {
+    case "end":
+    case "agent_turn_complete": {
       const endContent =
         typeof data === "object"
           ? data?.content ||
@@ -295,7 +363,7 @@ export function reduceChatEvent(
           ? base.content
           : String(endContent || "");
       const { aid, meta } = withAgentStream(base, data, (prev) => ({
-        ...prev,
+        ...withRunningCost(prev, data),
         contentText:
           prev.contentText && prev.contentText.length > 0
             ? prev.contentText
@@ -318,12 +386,12 @@ export function reduceChatEvent(
         message: {
           ...base,
           content: nextContent,
-          status: "success",
+          status: event === "end" ? "success" : "updating",
           taskId: data?.task_id || base.taskId,
           media: endMedia && endMedia.length > 0 ? endMedia : base.media,
           meta: {
             ...meta,
-            thinkingState: null,
+            thinkingState: event === "end" ? null : meta.thinkingState,
             ...(stopReason ? { stop_reason: stopReason } : {}),
           },
         },
@@ -353,18 +421,22 @@ export function reduceChatEvent(
     case "tool_execution_started": {
       const toolName = data?.tool_name || "unknown";
       const toolCallId = data?.tool_call_id;
-      const { aid, meta } = withAgentStream(base, data, (prev) => ({
-        ...prev,
-        toolExecutions: [
-          ...(prev.toolExecutions || []),
-          {
-            toolName,
-            toolCallId,
-            status: "running",
-            startedAt: Date.now(),
-          },
-        ],
-      }));
+      const { aid, meta } = withAgentStream(base, data, (prev) => {
+        const step = loopStepFromUnknown(data, prev.currentStep);
+        return {
+          ...prev,
+          toolExecutions: [
+            ...(prev.toolExecutions || []),
+            {
+              toolName,
+              toolCallId,
+              status: "running",
+              startedAt: Date.now(),
+              ...(step != null ? { step } : {}),
+            },
+          ],
+        };
+      });
       return {
         message: { ...base, meta, status: "updating" },
         agentKey: aid,

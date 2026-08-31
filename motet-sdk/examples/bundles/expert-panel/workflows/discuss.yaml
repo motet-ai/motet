@@ -52,7 +52,7 @@ input_parameters:
   model_name:
     type: string
     description: Thinking-capable model for the three panel turns.
-    default: "gpt-5.6-luna"
+    default: "o3-mini"
 
 steps:
   analyze_optimist:
@@ -62,7 +62,7 @@ steps:
     command_data:
       agent_id: "expert-panel.optimist"
       messages:
-        - role: system
+        - role: user
           content: "Analyze the following topic from your perspective: {{topic}}"
       context:
         model_provider: "{{provider}}"
@@ -77,7 +77,7 @@ steps:
     command_data:
       agent_id: "expert-panel.skeptic"
       messages:
-        - role: system
+        - role: user
           content: "Analyze the following topic from your perspective: {{topic}}"
       context:
         model_provider: "{{provider}}"
@@ -92,7 +92,7 @@ steps:
     command_data:
       agent_id: "expert-panel.synthesizer"
       messages:
-        - role: system
+        - role: user
           content: >
             Synthesize the following analyses on the topic "{{topic}}".
 

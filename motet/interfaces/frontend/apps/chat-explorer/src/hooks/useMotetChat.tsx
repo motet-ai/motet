@@ -5,7 +5,7 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-31
  *
  * Description:
  *     Core chat integration hook that bridges Ant Design X's useXChat with the
@@ -26,15 +26,22 @@
  *     - OAuth authorization prompts for external services
  *     - Attachment preview prefetching for images
  *     - Markdown + Mermaid rendering for assistant responses
- *     - One assistant bubble per turn: sub-agent thinking and replies nest
- *       in a scrollable, collapsible stack; the selected chat agent's
- *       thinking and synthesis follow below it
- *     - Option A: loads history from GET /api/v1/conversations/:id when switching conv (not on JWT refresh)
+ *     - One assistant bubble per turn: spawn children are compact cards
+ *       (title and thinking) that open the isolated child conversation.
+ *       In-thread peer agents (expert-panel, roundtable) are speaker blocks
+ *       with name, thinking, and full reply. Thinking stays in the bubble,
+ *       not the parent right rail. The selected chat agent's thinking and
+ *       synthesis follow below them. Opening a spawn child while the parent
+ *       turn is live projects that child's stream so thinking and tool steps
+ *       update in both conversations.
+ *     - Option A: loads history from GET /api/v1/conversations/:id when
+       switching conv (not on JWT refresh, not on every SSE token)
  *     - History is applied only after useXChat's per-conversation store has
  *       switched; writing earlier lands in the previous chat and the selected
  *       thread stays empty
  *     - Reloaded history groups consecutive attributed assistants from one
- *       user turn into a single bubble (same nested layout as live; no thinking)
+ *       user turn into a single bubble (same nested layout as live; thinking
+ *       restored when the history item stored thinking_text)
  *     - Surfaces conversation_get.warning when stored rows cannot be decrypted
  *     - Markdown + Mermaid rendering for all assistant bubbles (including during streaming)
  *     - Explicit Continue after max_iterations / max_model_calls budget stops (issue #188)
@@ -58,27 +65,39 @@
  *     - bubbleListItems keys must be stable across renders (avoid Date.now())
  *     - Image previews are prefetched when attachments appear in messages
  *     - OAuth prompts are rendered inline as special message content
- *     - One assistant bubble per turn; sub-agent sections sit in a
- *       scrollable collapse stack, then the selected agent's thinking
- *       and synthesis
+ *     - One assistant bubble per turn; spawn-child cards open the child
+ *       conversation; peer speakers stay in this thread; then the selected
+ *       agent's thinking and synthesis
  *     - useXChat keeps conversationKey and the message store one/two frames
  *       behind the activeConversationKey prop; do not setMessages until the
- *       store identity has caught up
+ *       store identity has caught up. A send whose store is not ready starts
+ *       the owner SSE only and plants the user row when that store appears.
+ *       Throttle snaps on storeReadyKey so a mid-turn switch does not paint
+ *       the previous chat's agents onto the new rail. Each conversation
+ *       keeps its own SSE. Leaving mid-turn keeps reducing that owner
+ *       stream; a send in another chat does not replace it. Coming back
+ *       overlays that chat's in-flight assistant until end. The composer
+ *       is busy only for the visible conversation (or a spawn child of an
+ *       active parent).
  */
 import React, { useMemo, useEffect, useRef, useCallback, useState } from "react";
 import { useXChat } from "@ant-design/x-sdk";
 import { FileCard, Think } from "@ant-design/x";
-import { Collapse } from "antd";
 import { MotetChatProvider, type ChatMessage, type ChatInput, type ChatOutput } from "../chatProvider";
 import { renderAssistantMarkdownWithMermaid } from "../components/MermaidBlock";
 import {
   assistantTurnSlices,
   assistantTranscriptTurnSlice,
+  spawnCardsForTurn,
+  peerSpeakerSlices,
+  useLiveTurns,
   MediaRenderer,
   isBudgetStopReason,
   CONTINUE_AFTER_BUDGET_USER_MESSAGE,
+  knownCostUsd,
   type AssistantTurnSlice,
   type RagControlsValue,
+  type SpawnChildCard,
 } from "@motet/ui-common";
 import { useChatProcessing } from "./useChatProcessing";
 import { useThrottle } from "./useThrottle";
@@ -86,8 +105,18 @@ import { type AttachmentState } from "../types/attachments";
 import { inferFileCardProps } from "../types/attachments";
 import { type AuthState } from "../types";
 import { buildHeaders } from "./useAuth";
-import { getConversation, mapHistoryToMessages } from "../api/conversations";
-import { shouldApplyHistory } from "./conversationHistoryApply";
+import { getConversation, getConversationCost, mapHistoryToMessages } from "../api/conversations";
+import {
+  shouldApplyHistory,
+  shouldFetchConversationHistory,
+  messageInfosHaveAgentStreams,
+  messageInfosHaveStreamingAssistant,
+  messageInfosHaveToolExecutions,
+  messageInfosHaveToolSummaries,
+  shouldClearLiveTurn,
+  shouldKeepLiveStreamOverHistory,
+  shouldWriteSendToStore,
+} from "./conversationHistoryApply";
 
 /** True if model thinking text is present on the assistant message (any agent bucket). */
 function hasAssistantThinkingMeta(meta: Record<string, unknown> | undefined): boolean {
@@ -95,6 +124,19 @@ function hasAssistantThinkingMeta(meta: Record<string, unknown> | undefined): bo
   const streams = meta.agentStreams as Record<string, { thinkingText?: string }> | undefined;
   if (!streams) return false;
   return Object.values(streams).some((a) => (a?.thinkingText || "").length > 0);
+}
+
+function spawnCardThinking(
+  card: SpawnChildCard,
+  childSlices: AssistantTurnSlice[]
+): { text: string; complete: boolean } {
+  const slice = childSlices.find(
+    (s) =>
+      (!!card.agent_id && s.agentKey === card.agent_id) ||
+      s.childConversationId === card.child_conversation_id
+  );
+  const text = (slice?.thinkingText || card.thinking_text || "").trim();
+  return { text, complete: slice ? slice.thinkingComplete : true };
 }
 
 function renderThinkBlock(thinkingText: string, thinkingComplete: boolean): React.ReactNode {
@@ -130,6 +172,51 @@ function initialsFromAgentName(agentName: string): string {
   if (words.length === 0) return "AI";
   if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
   return `${words[0][0] || ""}${words[1][0] || ""}`.toUpperCase();
+}
+
+function appendLocalUserIfMissing(
+  current: unknown[],
+  user: ChatMessage
+): unknown[] {
+  const infos = Array.isArray(current) ? [...current] : [];
+  const last = infos[infos.length - 1] as { message?: ChatMessage; role?: string } | undefined;
+  const lastMsg = (last?.message || last) as ChatMessage | undefined;
+  if (lastMsg?.role === "user" && String(lastMsg.content || "") === String(user.content || "")) {
+    return infos;
+  }
+  infos.push({
+    id: "local-user-seed",
+    message: { ...user, role: "user", status: "success" },
+    status: "success",
+  });
+  return infos;
+}
+
+function withLiveAssistant(
+  current: unknown[],
+  assistant: ChatMessage
+): Array<{ id: string; message: ChatMessage; status: "updating" | "success" }> {
+  const infos = Array.isArray(current) ? [...current] : [];
+  const status = assistant.status === "success" || assistant.status === "error" ? "success" : "updating";
+  const next = { ...assistant, status } as ChatMessage;
+  for (let i = infos.length - 1; i >= 0; i -= 1) {
+    const row = infos[i] as { id?: string; message?: ChatMessage; role?: string };
+    const msg = row?.message || row;
+    if (msg && (msg as ChatMessage).role === "assistant") {
+      infos[i] = {
+        id: String(row.id || `live-assistant-${i}`),
+        message: next,
+        status,
+      };
+      return infos as Array<{ id: string; message: ChatMessage; status: "updating" | "success" }>;
+    }
+  }
+  infos.push({
+    id: "live-assistant",
+    message: next,
+    status,
+  });
+  return infos as Array<{ id: string; message: ChatMessage; status: "updating" | "success" }>;
 }
 
 function buildAgentAvatar(agentName: string, agentKey: string): React.ReactNode {
@@ -174,6 +261,8 @@ function buildAgentAvatar(agentName: string, agentKey: string): React.ReactNode 
  * @param availableAgents - Registry list (for reasoning sidebar display names)
  * @param authorizedMessages - Map of messages that completed OAuth
  * @param openOAuthPopup - Function to open OAuth popup
+ * @param onOpenConversation - Open an isolated spawn-child conversation (id + title)
+ * @param onConversationTurnAgent - Follow-up agent for the opened conversation
  */
 export function useMotetChat(
   auth: AuthState,
@@ -190,7 +279,9 @@ export function useMotetChat(
   surfaceId: string,
   availableAgents: Array<{ qualified_id: string; display_name?: string }>,
   authorizedMessages: Map<string, { serviceId: string; displayName: string }>,
-  openOAuthPopup: (endpoint: string, serviceId: string, messageId: string, conversationId?: string) => void
+  openOAuthPopup: (endpoint: string, serviceId: string, messageId: string, conversationId?: string) => void,
+  onOpenConversation?: (conversationId: string, opts?: { title?: string; agentId?: string }) => void,
+  onConversationTurnAgent?: (conversationId: string, turnAgentId: string | null) => void
 ) {
   // ─────────────────────────────────────────────────────────────────────────────
   // SETUP: Provider and request context
@@ -198,6 +289,7 @@ export function useMotetChat(
 
   // Create singleton MotetChatProvider for SSE streaming
   const provider = useMemo(() => new MotetChatProvider("/api/v1/chat"), []);
+  provider.displayConversationKey = activeConversationKey;
 
   // Build request context with current auth and settings (surface_id for conversation registry)
   const requestContext = useMemo(() => ({
@@ -219,15 +311,38 @@ export function useMotetChat(
   // ─────────────────────────────────────────────────────────────────────────────
 
   // Core chat hook from Ant Design X SDK
-  const { messages, onRequest, isRequesting, setMessages } = useXChat<ChatMessage, ChatMessage, ChatInput, ChatOutput>({
+  const { messages, onRequest, isRequesting: sdkIsRequesting, setMessages } = useXChat<ChatMessage, ChatMessage, ChatInput, ChatOutput>({
     provider,
     conversationKey: activeConversationKey,
   });
+  const live = useLiveTurns(provider.liveTurns);
+  const isRequesting = sdkIsRequesting || live.isBusy(activeConversationKey);
+  const pendingLocalUsersRef = useRef<Map<string, ChatMessage>>(new Map());
+
+  const requestOnOwnerStore = useCallback(
+    (params: Partial<ChatInput>) => {
+      const cid = String(params.conversation_id || activeConversationKeyRef.current || "").trim();
+      const payload = { ...params, conversation_id: cid };
+      if (shouldWriteSendToStore(storeReadyKeyRef.current, cid)) {
+        onRequest(payload);
+        return;
+      }
+      const last = payload.messages?.[payload.messages.length - 1];
+      pendingLocalUsersRef.current.set(cid, {
+        role: "user",
+        content: last?.content || "",
+        status: "success",
+        attachments: last?.attachments,
+      });
+      provider.startOwnerStream(payload as ChatInput);
+    },
+    [onRequest, provider]
+  );
 
   /** Issue #188: Continue after budget stop — new turn, fresh budget (not resume). */
   const continueAfterBudget = useCallback(() => {
     if (isRequesting) return;
-    onRequest({
+    requestOnOwnerStore({
       messages: [
         {
           role: "user",
@@ -237,7 +352,7 @@ export function useMotetChat(
       continue_after_budget: true,
       ...requestContext,
     });
-  }, [isRequesting, onRequest, requestContext]);
+  }, [isRequesting, requestOnOwnerStore, requestContext]);
 
   // Keep latest setMessages in a ref so the load-history effect can call it after async fetch without needing it in deps (avoids duplicate GET when setMessages ref changes each render).
   const setMessagesRef = useRef(setMessages);
@@ -246,6 +361,7 @@ export function useMotetChat(
   isRequestingRef.current = isRequesting;
   const activeConversationKeyRef = useRef(activeConversationKey);
   activeConversationKeyRef.current = activeConversationKey;
+  const streamingConversationKeyRef = useRef<string | null>(null);
 
   /** Latest auth for history GET headers (JWT refresh must not retrigger this effect). */
   const authRef = useRef(auth);
@@ -253,9 +369,10 @@ export function useMotetChat(
   const hydratedConversationKeysRef = useRef<Set<string>>(new Set());
   const pendingHistoryRef = useRef<{
     key: string;
-    messageInfos: Array<{ id: string; message: ChatMessage; status: "success" }>;
+    messageInfos: Array<{ id: string; message: ChatMessage; status: "success" | "updating" }>;
   } | null>(null);
   const [historyWarning, setHistoryWarning] = useState<string | null>(null);
+  const [conversationCostUsd, setConversationCostUsd] = useState<number | null>(null);
   // useXChat creates the per-key store synchronously on first mount, then lags
   // one/two frames on later key changes (conversationKey state + store swap).
   const storeReadyKeyRef = useRef<string | null>(activeConversationKey);
@@ -286,6 +403,9 @@ export function useMotetChat(
         isRequesting: isRequestingRef.current,
         localMessageCount: Array.isArray(messagesRef.current) ? messagesRef.current.length : 0,
         alreadyHydrated: hydratedConversationKeysRef.current.has(pending.key),
+        streamingConversationKey:
+          provider.liveTurns.overlayOwner(pending.key) || streamingConversationKeyRef.current,
+        ownerLiveActive: provider.liveTurns.isActive(pending.key),
       })
     ) {
       if (
@@ -302,13 +422,21 @@ export function useMotetChat(
 
     // Only inspect this conversation's messages — messagesRef is stale until the
     // store swaps, so richer-state must run after storeReadyKey matches.
+    // Keep live toolExecutions and in-flight bubbles; do not replace them
+    // with a GET snapshot that regroups steps.
     if (hydratedConversationKeysRef.current.has(pending.key)) {
-      const current = messagesRef.current as Array<{ message?: { meta?: { agentStreams?: unknown } } }>;
-      const hasRicherStreamedState = current.some(
-        (mi) =>
-          !!(mi?.message?.meta?.agentStreams && Object.keys(mi.message.meta.agentStreams as object).length > 0)
-      );
-      if (hasRicherStreamedState) {
+      const current = messagesRef.current as Array<{
+        message?: { meta?: { agentStreams?: Record<string, { toolSummaries?: unknown[] }> } };
+      }>;
+      if (
+        shouldKeepLiveStreamOverHistory({
+          liveHasAgentStreams: messageInfosHaveAgentStreams(current),
+          liveHasToolSummaries: messageInfosHaveToolSummaries(current),
+          liveHasToolExecutions: messageInfosHaveToolExecutions(current),
+          liveIsStreaming: messageInfosHaveStreamingAssistant(current),
+          historyHasToolSummaries: messageInfosHaveToolSummaries(pending.messageInfos),
+        })
+      ) {
         pendingHistoryRef.current = null;
         return;
       }
@@ -327,46 +455,186 @@ export function useMotetChat(
     applyPendingHistoryIfStoreReady();
   }, [setMessages]);
 
-  // Option A: Load history when switching conversations or gaining credentials — not when JWT rotates (avoids races with active SSE / replacing in-flight messages).
-  // Guard: never overwrite a live stream with history. Reloaded rows reconstruct
-  // reply text in agentStreams but omit thinking and tool traces.
+  useEffect(() => {
+    const owner = live.overlayOwner(activeConversationKeyRef.current);
+    if (owner && live.isActive(owner)) {
+      streamingConversationKeyRef.current = owner;
+    }
+  }, [sdkIsRequesting, live.epoch, live]);
+
+  useEffect(() => {
+    if (storeReadyKey !== activeConversationKey) return;
+    // The SDK writes the owner store for the in-flight request. Overlaying
+    // on start() used to insert a second empty assistant (loading dots).
+    if (live.isActive(activeConversationKey) && sdkIsRequesting) return;
+    const overlay = live.overlayFor(activeConversationKey);
+    if (!overlay) return;
+    setMessagesRef.current(withLiveAssistant(messagesRef.current, overlay));
+  }, [activeConversationKey, storeReadyKey, sdkIsRequesting, live, live.epoch]);
+
+  useEffect(() => {
+    if (storeReadyKey !== activeConversationKey) return;
+    const seed = pendingLocalUsersRef.current.get(storeReadyKey);
+    if (!seed) return;
+    pendingLocalUsersRef.current.delete(storeReadyKey);
+    const withUser = appendLocalUserIfMissing(messagesRef.current, seed);
+    const overlay = live.overlayFor(storeReadyKey);
+    setMessagesRef.current(
+      (overlay ? withLiveAssistant(withUser, overlay) : withUser) as Parameters<
+        typeof setMessages
+      >[0]
+    );
+  }, [storeReadyKey, activeConversationKey, live, live.epoch]);
+
+  useEffect(() => {
+    const turn = live.get(activeConversationKey);
+    if (
+      shouldClearLiveTurn({
+        displayConversationId: activeConversationKey,
+        streamConversationId: turn?.conversationId,
+        displayIsRequesting: sdkIsRequesting,
+        streamIsActive: turn?.active,
+      })
+    ) {
+      if (streamingConversationKeyRef.current === activeConversationKey) {
+        streamingConversationKeyRef.current = null;
+      }
+      provider.clearLiveTurn(activeConversationKey);
+    }
+  }, [sdkIsRequesting, activeConversationKey, provider, live, live.epoch]);
+
+  const viewingChildDuringParentTurn = Boolean(
+    activeConversationKey &&
+      live.isBusy(activeConversationKey) &&
+      !live.isActive(activeConversationKey)
+  );
+  const ownerStreamLive = Boolean(
+    activeConversationKey && (live.isActive(activeConversationKey) || isRequesting)
+  );
+
+  // Load history when switching conversations or gaining credentials — not
+  // when JWT rotates, and not on every live SSE frame (that GET is discarded
+  // and saturates conversation_get workers). Opening a spawn child while the
+  // parent turn is live still hydrates that child's GET (brief at mint, reply
+  // after join) and polls every 2s until the parent goes idle.
   useEffect(() => {
     let cancelled = false;
     if (!activeConversationKey || !canFetchHistory) return;
+    if (
+      !shouldFetchConversationHistory({
+        canFetch: canFetchHistory,
+        ownerStreamLive,
+        viewingChildDuringParentTurn,
+      })
+    ) {
+      return;
+    }
     setHistoryWarning(null);
     const headers = buildHeaders(authRef.current);
     const key = activeConversationKey;
-    getConversation(key, headers).then((detail) => {
-      if (cancelled) return;
-      if (activeConversationKeyRef.current !== key) return;
-      if (!detail?.history?.length) {
-        const stored = detail?.counts?.memory ?? 0;
-        setHistoryWarning(
-          detail?.warning
-          || (stored > 0
-            ? "This conversation has stored messages that cannot be decrypted with the current tenant encryption key. Start a new chat to continue."
-            : null)
+    const load = () => {
+      getConversation(key, headers).then((detail) => {
+        if (cancelled) return;
+        if (activeConversationKeyRef.current !== key) return;
+        setConversationCostUsd(knownCostUsd(detail?.cost_usd));
+        onConversationTurnAgent?.(
+          key,
+          typeof detail?.turn_agent_id === "string" && detail.turn_agent_id.trim()
+            ? detail.turn_agent_id.trim()
+            : null
         );
-        return;
-      }
-      setHistoryWarning(null);
-      if (activeConversationKeyRef.current === key && isRequestingRef.current) return;
-      const mapped = mapHistoryToMessages(detail.history, agentId);
-      const messageInfos = mapped.map((m, i) => ({
-        id: `restored-${key}-${i}`,
-        message: { ...m, status: "success" as const } as ChatMessage,
-        status: "success" as const,
-      }));
-      pendingHistoryRef.current = { key, messageInfos };
-      applyPendingHistoryIfStoreReady();
-    });
+        if (!detail?.history?.length) {
+          const stored = detail?.counts?.memory ?? 0;
+          setHistoryWarning(
+            detail?.warning
+            || (stored > 0
+              ? "This conversation has stored messages that cannot be decrypted with the current tenant encryption key. Start a new chat to continue."
+              : null)
+          );
+          const overlay = provider.overlayFor(key);
+          if (overlay) {
+            pendingHistoryRef.current = {
+              key,
+              messageInfos: withLiveAssistant(
+                Array.isArray(messagesRef.current) ? messagesRef.current : [],
+                overlay
+              ),
+            };
+            applyPendingHistoryIfStoreReady();
+          }
+          return;
+        }
+        setHistoryWarning(null);
+        const streamingKey = streamingConversationKeyRef.current;
+        const ownerLive = provider.isActive(key);
+        if (
+          activeConversationKeyRef.current === key &&
+          (isRequestingRef.current || ownerLive) &&
+          (!streamingKey || streamingKey === key)
+        ) {
+          return;
+        }
+        const mapped = mapHistoryToMessages(detail.history, agentId);
+        let messageInfos: Array<{ id: string; message: ChatMessage; status: "success" | "updating" }> = mapped.map((m, i) => ({
+          id: `restored-${key}-${i}`,
+          message: { ...m, status: "success" as const } as ChatMessage,
+          status: "success" as const,
+        }));
+        const historyOverlay = provider.overlayFor(key);
+        if (historyOverlay) {
+          messageInfos = withLiveAssistant(messageInfos, historyOverlay);
+        }
+        pendingHistoryRef.current = { key, messageInfos };
+        applyPendingHistoryIfStoreReady();
+      });
+    };
+    load();
+    if (!viewingChildDuringParentTurn) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const timer = window.setInterval(load, 2000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
-  }, [activeConversationKey, canFetchHistory, agentId]);
+  }, [
+    activeConversationKey,
+    canFetchHistory,
+    agentId,
+    isRequesting,
+    ownerStreamLive,
+    viewingChildDuringParentTurn,
+    onConversationTurnAgent,
+  ]);
+
+  useEffect(() => {
+    if (!activeConversationKey || !canFetchHistory) {
+      setConversationCostUsd(null);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      getConversationCost(activeConversationKey, buildHeaders(authRef.current)).then((cost) => {
+        if (!cancelled && cost != null) setConversationCostUsd(cost);
+      });
+    };
+    load();
+    if (!isRequesting) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const timer = window.setInterval(load, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeConversationKey, canFetchHistory, isRequesting]);
 
   // Throttle message updates to 50ms to prevent jank during streaming
-  const throttledMessages = useThrottle(messages, 50);
+  const throttledMessages = useThrottle(messages, 50, storeReadyKey);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // METADATA EXTRACTION: Reasoning Chain
@@ -376,7 +644,8 @@ export function useMotetChat(
   const { reasoningPanels, thinkingState } = useChatProcessing(
     throttledMessages,
     activeConversationKey,
-    availableAgents
+    availableAgents,
+    storeReadyKey
   );
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -682,34 +951,61 @@ export function useMotetChat(
           if (turnSlices.length > 0) {
             const childSlices = turnSlices.filter((s) => !s.isPrimary);
             const primarySlice = turnSlices.find((s) => s.isPrimary) ?? turnSlices[turnSlices.length - 1];
-            const inProgress = st === "loading" || st === "updating";
+            const spawnCards = spawnCardsForTurn(
+              msg?.meta as Record<string, unknown> | undefined,
+              activeConversationKey,
+              childSlices
+            );
+            const speakers = peerSpeakerSlices(childSlices, spawnCards);
             assistantAvatar = buildAgentAvatar(primarySlice.agentName, primarySlice.agentKey);
             content = (
               <div className="assistant-turn">
-                {childSlices.length > 0 ? (
-                  <div className="assistant-turn-subagents">
-                    <Collapse
-                      key={inProgress ? "live" : "done"}
-                      size="small"
-                      bordered={false}
-                      className="assistant-turn-subagents-collapse"
-                      defaultActiveKey={inProgress ? childSlices.map((s) => s.agentKey) : []}
-                      items={childSlices.map((s) => ({
-                        key: s.agentKey,
-                        label: (
-                          <div className="assistant-turn-subagent-label">
-                            {buildAgentAvatar(s.agentName, s.agentKey)}
-                            <span>{s.agentName}</span>
+                {spawnCards.length > 0 ? (
+                  <div className="assistant-turn-spawn-cards">
+                    {spawnCards.map((card) => {
+                      const thinking = spawnCardThinking(card, childSlices);
+                      return (
+                        <div key={card.child_conversation_id} className="assistant-turn-spawn-card">
+                          <button
+                            type="button"
+                            className="assistant-turn-spawn-card-open"
+                            onClick={() =>
+                              onOpenConversation?.(card.child_conversation_id, {
+                                title: card.title,
+                                agentId: card.turn_agent_id || "core.subagent",
+                              })
+                            }
+                          >
+                            <div className="assistant-turn-spawn-card-title">
+                              {buildAgentAvatar(
+                                card.title,
+                                card.agent_id || card.child_conversation_id
+                              )}
+                              <span>{card.title}</span>
+                            </div>
+                          </button>
+                          {renderThinkBlock(thinking.text, thinking.complete)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {speakers.length > 0 ? (
+                  <div className="assistant-turn-speakers">
+                    {speakers.map((speaker) => (
+                      <div key={speaker.agentKey} className="assistant-turn-speaker">
+                        <div className="assistant-turn-speaker-title">
+                          {buildAgentAvatar(speaker.agentName, speaker.agentKey)}
+                          <span>{speaker.agentName}</span>
+                        </div>
+                        {renderThinkBlock(speaker.thinkingText, speaker.thinkingComplete)}
+                        {speaker.text ? (
+                          <div className="assistant-turn-speaker-body">
+                            {renderSliceMarkdown(speaker.text)}
                           </div>
-                        ),
-                        children: (
-                          <>
-                            {renderThinkBlock(s.thinkingText, s.thinkingComplete)}
-                            {renderSliceMarkdown(s.text)}
-                          </>
-                        ),
-                      }))}
-                    />
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
                 ) : null}
                 <div className="assistant-turn-primary">
@@ -770,6 +1066,7 @@ export function useMotetChat(
     videoStreamUrls,
     ensureVideoSource,
     openOAuthPopup,
+    onOpenConversation,
     conversationId,
     activeConversationKey,
     availableAgents,
@@ -780,15 +1077,18 @@ export function useMotetChat(
 
   return {
     messages: throttledMessages,
+    storeMessages: messages as unknown[],
     bubbleListItems,
-    onRequest,
+    onRequest: requestOnOwnerStore,
     isRequesting,
     requestContext,
     reasoningPanels,
     thinkingState,
     continueAfterBudget,
     historyWarning,
+    conversationCostUsd,
     storeReadyKey,
+    inFlightConversationIds: live.inFlightIds,
   };
 }
 

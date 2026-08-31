@@ -17,7 +17,7 @@ flowchart TD
   gate -->|trivial + auto| notools["no_tools reply"]
   gate -->|else| run["run_agent in-process"]
   run --> loop["agentic_loop"]
-  spawn["core.spawn_agents"] --> child["motet.do(agent_loop) per task"]
+  spawn["core.spawn_agents"] --> child["join agent_loop with child conversation_id"]
   child --> loop
 ```
 
@@ -38,7 +38,7 @@ Any other value runs as `auto`. There is no `strategy`, `react`, `direct`, `cot`
 `agentic_loop` (`motet/core/reasoning/react/agentic_loop.py`) is the loop body: LLM → tools/workflows → continue. It is not a distributed command. Model, tool, and workflow calls stay distributed via `motet.do`.
 
 - Tool schemas: frozen sticky prefix (`core.help` / `core.tools_search` / `core.tool_call` plus keyword pins). Catalog reachability is `tools_search` → `tool_call`. No per-turn embedding shortlist.
-- Fan-out: `core.spawn_agents`. Width cap 8 (reject over cap, do not truncate). Children cannot spawn again (`exclude_tools`). Handback tools are not inherited. Partial failure degrades the observation, not the turn.
+- Fan-out: `core.spawn_agents`. Width cap 8 (reject over cap, do not truncate). Children cannot spawn again (`exclude_tools`). Handback tools are not inherited. Partial failure degrades the observation, not the turn. Each child is an isolated conversation with an opaque id and stored parent/root pointers; `agent_loop` joins with that `conversation_id`. The child is registered at mint under the parent chat agent (sidebar list) and records `turn_agent_id=core.subagent` plus the per-task tool cage. The spawn instruction is the first user message so opening the card shows that conversation while it runs. First-turn brief and follow-up `agent_turn` both resolve `core.subagent` (prompt, hooks, rails, no spawn). The parent turn stores a card pointer (`spawn_children`); live SSE still uses `{parent}.spawn-N`. Deleting the parent conversation deletes those isolated children.
 - Suspend/resume: Turn Runtime owns checkpoint write, start, resume, continue-after-budget. Checkpoints live in `motet/core/checkpoints/`. Handback tools checkpoint and return `stop_reason="suspended"`.
 - Budget wrap-up and forced finalize live in the loop, not in a second executor.
 

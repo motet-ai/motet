@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-31
  *
  * Description:
  *     Typed client for /api/v1/conversations (list, get, rename, delete).
@@ -16,7 +16,9 @@
  *     import { listConversations, getConversation } from "@motet/ui-common/api";
  */
 
+import type { SpawnChildCard, ToolSummaryRow } from "../types";
 import { groupTranscriptAssistantTurns } from "../utils/assistantTurn";
+import { knownCostUsd } from "../utils/formatting";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RESPONSE TYPES
@@ -31,6 +33,10 @@ export type ConversationItem = {
   agent_id?: string | null;
   /** Surface/channel (e.g. demo_chat, ops_dashboard) */
   surface_id?: string | null;
+  /** Follow-up agent when it differs from list-scope agent_id */
+  turn_agent_id?: string | null;
+  /** Immediate parent, or null for a root chat */
+  parent_conversation_id: string | null;
 };
 
 export type ConversationListResponse = {
@@ -53,6 +59,14 @@ export type ConversationHistoryItem = {
   agent_id?: string;
   /** Immediate parent agent when this row is a nested loop */
   parent_agent_id?: string;
+  /** Provider reasoning stored for this assistant turn (reload display) */
+  thinking_text?: string;
+  /** Short tool name/status/preview for this assistant turn (reload display) */
+  tool_summaries?: ToolSummaryRow[];
+  /** Priced estimate for this assistant row; omitted when unknown */
+  cost_usd?: number;
+  /** Isolated spawn-child conversations created during this assistant turn */
+  spawn_children?: SpawnChildCard[];
   /** Artifact references for media (e.g. images) so UI can display them */
   attachments?: ConversationHistoryAttachment[];
 };
@@ -63,6 +77,12 @@ export type ConversationDetailResponse = {
   counts: { memory?: number; vector?: number };
   summary?: string | null;
   warning?: string | null;
+  /** Priced conversation rollup; omitted when unknown */
+  cost_usd?: number | null;
+  /** Follow-up agent when it differs from the list-scope agent */
+  turn_agent_id?: string | null;
+  /** Immediate parent, or null for a root chat */
+  parent_conversation_id: string | null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,6 +189,8 @@ export async function deleteConversation(
  * Excludes tool/system messages so only user-facing transcript is returned.
  * Consecutive attributed assistant rows from one user turn are folded into a
  * single message with reconstructed agentStreams (selected agent, else last row).
+ * thinking_text, tool_summaries, cost_usd, and spawn_children on a history item
+ * are copied onto that agent's stream / the parent message.
  */
 export function mapHistoryToMessages(
   history: ConversationHistoryItem[],
@@ -176,7 +198,7 @@ export function mapHistoryToMessages(
 ): Array<{
   role: "user" | "assistant";
   content: string;
-  meta?: { agent_id?: string; agentStreams?: Record<string, unknown> };
+  meta?: Record<string, unknown>;
   attachments?: Array<{
     artifact_id: string;
     content_type: string;
@@ -189,7 +211,11 @@ export function mapHistoryToMessages(
     .filter((m) => {
       const role = (m.role || "user") as string;
       if (role === "tool" || role === "system") return false;
-      if (role === "assistant" && !(m.content ?? m.text ?? "").trim()) return false;
+      const thinking = (m.thinking_text || "").trim();
+      const summaries = Array.isArray(m.tool_summaries) ? m.tool_summaries : [];
+      const cost = knownCostUsd(m.cost_usd);
+      const spawnChildren = Array.isArray(m.spawn_children) ? m.spawn_children : [];
+      if (role === "assistant" && !(m.content ?? m.text ?? "").trim() && !thinking && summaries.length === 0 && cost == null && spawnChildren.length === 0) return false;
       return true;
     })
     .map((m) => {
@@ -200,14 +226,22 @@ export function mapHistoryToMessages(
         bytes: a.bytes ?? 0,
         status: "ready" as const,
       }));
+      const thinking = (m.thinking_text || "").trim();
+      const summaries = Array.isArray(m.tool_summaries) ? m.tool_summaries : [];
+      const cost = knownCostUsd(m.cost_usd);
+      const spawnChildren = Array.isArray(m.spawn_children) ? m.spawn_children : [];
       return {
         role: (m.role || "user") as "user" | "assistant",
         content: m.content ?? m.text ?? "",
-        ...((m.agent_id || m.parent_agent_id)
+        ...((m.agent_id || m.parent_agent_id || thinking || summaries.length || cost != null || spawnChildren.length)
           ? {
               meta: {
                 ...(m.agent_id ? { agent_id: m.agent_id } : {}),
                 ...(m.parent_agent_id ? { parent_agent_id: m.parent_agent_id } : {}),
+                ...(thinking ? { thinking_text: thinking } : {}),
+                ...(summaries.length ? { tool_summaries: summaries } : {}),
+                ...(cost != null ? { cost_usd: cost } : {}),
+                ...(spawnChildren.length ? { spawn_children: spawnChildren } : {}),
               },
             }
           : {}),

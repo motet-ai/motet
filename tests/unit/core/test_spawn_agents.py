@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-25
+Last Modified: 2026-08-31
 
 Description:
     Unit coverage for ``core.spawn_agents``, the parallel sub-agent fan-out.
@@ -29,19 +29,26 @@ Notes:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
 import pytest
 
+from motet.core.agents.registry import CORE_SUBAGENT_ID, get_agent_registry
 from motet.core.tools.builtin.spawn_agents import (
     MAX_FANOUT_WIDTH,
-    SUBAGENT_DISCOVERY_PROMPT,
-    SUBAGENT_SYSTEM_PROMPT,
     TOOL_NAME,
+    _thinking_text,
+    _tool_summaries,
     run_spawn_agents,
     spawn_child_id,
 )
+
+
+def _core_subagent():
+    cfg = get_agent_registry().get(CORE_SUBAGENT_ID)
+    assert cfg is not None
+    return cfg
 
 DISCOVERY_FILTER: Dict[str, Any] = {
     "exclude_tools": ["core.host_exec"],
@@ -61,10 +68,15 @@ class _FakeMotet:
         self.metadata = metadata if metadata is not None else {"tool_filter_metadata": dict(DISCOVERY_FILTER)}
         self.task_id = "task-1"
         self.stream_key = "task:task-1:response"
-        self.joined: List[Tuple[Any, Any]] = []
+        self.conversation_id = None
+        self.tenant_id = "t1"
+        self.principal_id = "p1"
+        self.motet_id = "default"
+        self.command_id = "cmd-1"
+        self.joined: List[Any] = []
         self._results = results
 
-    def join(self, calls: List[Tuple[Any, Any]], **_kwargs: Any) -> List[Any]:
+    def join(self, calls: List[Any], **_kwargs: Any) -> List[Any]:
         self.joined = calls
         if self._results is not None:
             return self._results
@@ -82,8 +94,21 @@ def _run(motet: _FakeMotet, tasks: List[Any]) -> Dict[str, Any]:
         return run_spawn_agents({"tasks": tasks})
 
 
+def _join_data(item: Any) -> Any:
+    if isinstance(item, tuple):
+        return item[1]
+    return getattr(item, "data", None)
+
+
+def _join_conversation_id(item: Any) -> Optional[str]:
+    if isinstance(item, tuple):
+        return None
+    ctx = getattr(item, "distributed_context", None)
+    return getattr(ctx, "conversation_id", None) if ctx is not None else None
+
+
 def _agent_payloads(motet: _FakeMotet) -> List[Any]:
-    return [data for _cmd, data in motet.joined]
+    return [_join_data(item) for item in motet.joined]
 
 
 # --- rails -----------------------------------------------------------------
@@ -224,44 +249,161 @@ def test_children_write_to_the_parent_task_stream_with_their_own_agent_id():
     assert motet.metadata["agent_id"] == "core.default"
 
 
-def test_persists_successful_child_writeups_on_the_parent_conversation():
-    """Refresh rebuilds nested sections from non-root transcript rows."""
+def test_spawn_child_id_is_parent_dot_spawn_n():
+    """Stream id stays {parent}.spawn-N; conversation id is minted separately."""
+    from motet.core.conversations.lineage import mint_isolated_conversation
+
+    first = mint_isolated_conversation("conv-1", kind="spawn").conversation_id
+    second = mint_isolated_conversation("conv-1", kind="spawn").conversation_id
+    assert first.startswith("iso-")
+    assert second.startswith("iso-")
+    assert first != second
+    assert spawn_child_id("core.default", 0) == "core.default.spawn-1"
+
+
+def test_joins_each_child_loop_on_its_isolated_conversation_id():
+    motet = _FakeMotet()
+    motet.conversation_id = "conv-1"
+    lineage: List[Dict[str, Any]] = []
+
+    with patch(
+        "motet.core.conversations.lineage.record_conversation_lineage_sync",
+        side_effect=lambda **kw: lineage.append(kw) or "conv-1",
+    ):
+        result = _run(motet, ["research pricing", "read the postmortems"])
+
+    joined = [_join_conversation_id(item) for item in motet.joined]
+    assert len(joined) == 2
+    assert joined[0] != joined[1]
+    assert all(cid and cid.startswith("iso-") and cid != "conv-1" for cid in joined)
+    assert [row["child_conversation_id"] for row in lineage] == joined
+    assert lineage[0]["parent_conversation_id"] == "conv-1"
+    assert lineage[0]["root_conversation_id"] == "conv-1"
+    assert result["result"]["results"][0]["child_conversation_id"] == joined[0]
+    assert result["result"]["results"][1]["child_conversation_id"] == joined[1]
+
+
+def test_thinking_text_peels_nested_loop_payload() -> None:
+    assert _thinking_text({"thinking_text": "pick two capitals"}) == "pick two capitals"
+    assert _thinking_text({"data": {"thinking_text": "why two capitals"}}) == "why two capitals"
+    assert _thinking_text({"result": {"reasoning_content": "look it up"}}) == "look it up"
+    assert _thinking_text({"final_response": "Austin"}) == ""
+
+
+def test_tool_summaries_peels_nested_loop_payload() -> None:
+    rows = [{"tool_name": "core.web_search", "status": "success", "preview": "Austin"}]
+    assert _tool_summaries({"tool_summaries": rows}) == rows
+    assert _tool_summaries({"data": {"tool_summaries": rows}}) == rows
+    assert _tool_summaries(
+        {"result": {"tool_results": [{"tool_name": "core.web_search", "status": "success", "result": "Austin"}]}}
+    )[0]["tool_name"] == "core.web_search"
+
+
+def test_persists_successful_children_on_isolated_conversations():
+    """First turn lives on the child cid; the parent keeps a card pointer."""
     motet = _FakeMotet(
         metadata={
             "tool_filter_metadata": dict(DISCOVERY_FILTER),
             "agent_id": "core.default",
+            "surface_id": "demo_chat",
         },
         results=[
-            {"final_response": "price is 12"},
+            {
+                "final_response": "price is 12",
+                "thinking_text": "look up the list price",
+                "tool_summaries": [
+                    {"tool_name": "core.web_search", "status": "success", "preview": "list price"},
+                ],
+                "cost_usd": 0.004,
+            },
             {"final_response": "outage notes"},
         ],
     )
     motet.conversation_id = "conv-1"
     motet.memory = object()
-    stored: List[Tuple[str, str, str]] = []
+    stored: List[Dict[str, Any]] = []
+    registered: List[Dict[str, Any]] = []
 
-    def _store(
-        _motet: Any,
-        text: str,
-        *,
-        agent_id: str,
-        root_agent_id: str,
-        parent_agent_id: str,
-    ) -> Dict[str, Any]:
-        stored.append((agent_id, root_agent_id, parent_agent_id, text))
+    def _store(_motet: Any, messages: Any, text: str, **kwargs: Any) -> Dict[str, Any]:
+        stored.append(
+            {
+                "conversation_id": kwargs.get("conversation_id"),
+                "agent_id": kwargs.get("agent_id"),
+                "text": text,
+                "user": getattr(messages[0], "content", None) if messages else None,
+                "thinking_text": kwargs.get("thinking_text"),
+                "tool_summaries": kwargs.get("tool_summaries"),
+                "cost_usd": kwargs.get("cost_usd"),
+                "include_tool_invocations": kwargs.get("include_tool_invocations"),
+                "root_turn": kwargs.get("root_turn"),
+            }
+        )
         return {"canonical_transcript_stored": True}
 
-    with patch(
-        "motet.core.conversations.transcript_storage.store_subagent_reply",
-        side_effect=_store,
+    def _register(*args: Any, **kwargs: Any) -> None:
+        registered.append(
+            {
+                "id": args[3] if len(args) > 3 else kwargs.get("conversation_id"),
+                "title": kwargs.get("title"),
+                "agent_id": kwargs.get("agent_id"),
+                "turn_agent_id": kwargs.get("turn_agent_id"),
+                "surface_id": kwargs.get("surface_id"),
+            }
+        )
+
+    with (
+        patch(
+            "motet.core.conversations.transcript_storage.store_turn_transcript",
+            side_effect=_store,
+        ),
+        patch(
+            "motet.core.conversations.registry.register_or_touch_conversation_sync",
+            side_effect=_register,
+        ),
+        patch(
+            "motet.core.conversations.ownership.authorize_conversation_access_sync",
+            return_value=None,
+        ),
+        patch(
+            "motet.core.conversations.lineage.record_conversation_lineage_sync",
+            return_value="conv-1",
+        ),
     ):
         result = _run(motet, ["research pricing", "read the postmortems"])
 
     assert result["status"] == "success"
-    assert stored == [
-        ("core.default.spawn-1", "core.default", "core.default", "price is 12"),
-        ("core.default.spawn-2", "core.default", "core.default", "outage notes"),
+    joined = [_join_conversation_id(item) for item in motet.joined]
+    briefs = [row for row in stored if row["text"] == ""]
+    replies = [row for row in stored if row["text"]]
+    assert [row["conversation_id"] for row in briefs] == joined
+    assert [row["user"] for row in briefs] == ["research pricing", "read the postmortems"]
+    assert [row["conversation_id"] for row in replies] == joined
+    assert replies[0]["user"] is None
+    assert replies[0]["text"] == "price is 12"
+    assert replies[0]["root_turn"] is False
+    assert replies[0]["thinking_text"] == "look up the list price"
+    assert replies[0]["tool_summaries"] == [
+        {"tool_name": "core.web_search", "status": "success", "preview": "list price"}
     ]
+    assert replies[0]["cost_usd"] == 0.004
+    assert replies[0]["include_tool_invocations"] is True
+    assert replies[0]["agent_id"] == "core.subagent"
+    cards = result["meta"]["spawn_children"]
+    assert cards[0]["child_conversation_id"] == joined[0]
+    assert cards[0]["title"] == "research pricing"
+    assert cards[0]["agent_id"] == "core.default.spawn-1"
+    assert cards[0]["turn_agent_id"] == "core.subagent"
+    assert cards[0]["thinking_text"] == "look up the list price"
+    assert cards[0]["tool_summaries"] == [
+        {"tool_name": "core.web_search", "status": "success", "preview": "list price"}
+    ]
+    assert "spawn_children" not in motet.metadata
+    assert {row["id"] for row in registered} == set(joined)
+    assert registered[0]["title"] == "research pricing"
+    assert registered[0]["agent_id"] == "core.default"
+    assert registered[0]["turn_agent_id"] == "core.subagent"
+    assert registered[0]["surface_id"] == "demo_chat"
+    assert registered[1]["title"] == "read the postmortems"
 
 
 def test_does_not_persist_incomplete_child_rows():
@@ -279,13 +421,29 @@ def test_does_not_persist_incomplete_child_rows():
     motet.memory = object()
     stored: List[str] = []
 
-    with patch(
-        "motet.core.conversations.transcript_storage.store_subagent_reply",
-        side_effect=lambda *_a, **kw: stored.append(kw["agent_id"]) or {},
+    with (
+        patch(
+            "motet.core.conversations.transcript_storage.store_turn_transcript",
+            side_effect=lambda *_a, **kw: stored.append(kw["conversation_id"]) or {},
+        ),
+        patch(
+            "motet.core.conversations.registry.register_or_touch_conversation_sync",
+            return_value=None,
+        ),
+        patch(
+            "motet.core.conversations.ownership.authorize_conversation_access_sync",
+            return_value=None,
+        ),
+        patch(
+            "motet.core.conversations.lineage.record_conversation_lineage_sync",
+            return_value="conv-1",
+        ),
     ):
         _run(motet, ["a", "b"])
 
-    assert stored == ["core.default.spawn-2"]
+    joined = [_join_conversation_id(item) for item in motet.joined]
+    assert stored.count(joined[0]) == 1
+    assert stored.count(joined[1]) == 2
 
 
 def test_child_transcript_failure_does_not_fail_the_tool():
@@ -298,13 +456,68 @@ def test_child_transcript_failure_does_not_fail_the_tool():
     motet.conversation_id = "conv-1"
     motet.memory = object()
 
-    with patch(
-        "motet.core.conversations.transcript_storage.store_subagent_reply",
-        side_effect=RuntimeError("memory down"),
+    with (
+        patch(
+            "motet.core.conversations.transcript_storage.store_turn_transcript",
+            side_effect=RuntimeError("memory down"),
+        ),
+        patch(
+            "motet.core.conversations.lineage.record_conversation_lineage_sync",
+            return_value="conv-1",
+        ),
     ):
         result = _run(motet, ["a", "b"])
 
     assert result["status"] == "success"
+
+
+def test_partial_child_persist_still_yields_a_card_per_success():
+    """A failed transcript write for one child synthesizes its card anyway."""
+    motet = _FakeMotet(
+        metadata={
+            "tool_filter_metadata": dict(DISCOVERY_FILTER),
+            "agent_id": "core.default",
+        },
+        results=[
+            {"final_response": "price is 12"},
+            {"final_response": "outage notes"},
+        ],
+    )
+    motet.conversation_id = "conv-1"
+    motet.memory = object()
+
+    def _store(_motet: Any, _messages: Any, text: str, **_kw: Any) -> Dict[str, Any]:
+        if text == "outage notes":
+            raise RuntimeError("memory down")
+        return {"canonical_transcript_stored": True}
+
+    with (
+        patch(
+            "motet.core.conversations.transcript_storage.store_turn_transcript",
+            side_effect=_store,
+        ),
+        patch(
+            "motet.core.conversations.registry.register_or_touch_conversation_sync",
+            return_value=None,
+        ),
+        patch(
+            "motet.core.conversations.ownership.authorize_conversation_access_sync",
+            return_value=None,
+        ),
+        patch(
+            "motet.core.conversations.lineage.record_conversation_lineage_sync",
+            return_value="conv-1",
+        ),
+    ):
+        result = _run(motet, ["research pricing", "read the postmortems"])
+
+    assert result["status"] == "success"
+    joined = [_join_conversation_id(item) for item in motet.joined]
+    cards = result["meta"]["spawn_children"]
+    assert [card["child_conversation_id"] for card in cards] == joined
+    assert cards[0]["preview"] == "price is 12"
+    assert cards[1]["preview"] == "outage notes"
+    assert cards[1]["agent_id"] == "core.default.spawn-2"
 
 
 def _system_contents(payload: Any) -> List[str]:
@@ -328,7 +541,9 @@ def test_sub_agents_do_not_inherit_the_transcript():
 
     for payload in _agent_payloads(motet):
         # Bare instructions declare no tools, so the child is on discovery.
-        assert _system_contents(payload) == [SUBAGENT_DISCOVERY_PROMPT]
+        assert _system_contents(payload) == [
+            _core_subagent().metadata["discovery_system_prompt"]
+        ]
         assert len(payload.conversation_history) == 1
 
 
@@ -345,10 +560,12 @@ def test_sibling_system_prompts_are_identical_so_the_prefix_stays_cacheable():
 
     payloads = _agent_payloads(motet)
     texts = [_system_contents(p)[0] for p in payloads]
-    assert texts[0] == texts[1] == SUBAGENT_SYSTEM_PROMPT
-    assert "10 tool rounds" in texts[0]
-    assert "8 tool calls" in texts[0]
-    assert "60 seconds of tool time" in texts[0]
+    cfg = _core_subagent()
+    assert texts[0] == texts[1] == cfg.system_prompt
+    assert f"{cfg.max_iterations} tool rounds" in texts[0]
+    assert f"{cfg.max_tools} tool calls" in texts[0]
+    seconds = int(cfg.metadata["max_tool_time_ms"]) // 1000
+    assert f"{seconds} seconds of tool time" in texts[0]
     assert "core.web_search" not in texts[0]
     assert "core.http_get_browser" not in texts[0]
     assert "http_get_browser" not in texts[0]
@@ -358,23 +575,33 @@ def test_sibling_system_prompts_are_identical_so_the_prefix_stays_cacheable():
 
 def test_sub_agents_get_tighter_spend_rails_than_the_parent_defaults():
     """Eight children inheriting the parent $0.75 ceiling would be a $6 fan-out."""
-    from motet.core.tools.builtin.spawn_agents import (
-        SUBAGENT_MAX_COST_USD,
-        SUBAGENT_MAX_ITERATIONS,
-        SUBAGENT_MAX_PROMPT_TOKENS,
-        SUBAGENT_MAX_TOOL_TIME_MS,
-    )
-
+    cfg = _core_subagent()
     motet = _FakeMotet()
     _run(motet, ["a", "b"])
 
     for payload in _agent_payloads(motet):
-        assert payload.max_iterations == SUBAGENT_MAX_ITERATIONS
-        assert payload.max_iterations == 10
-        assert payload.max_cost_usd == SUBAGENT_MAX_COST_USD
-        assert payload.max_prompt_tokens == SUBAGENT_MAX_PROMPT_TOKENS
-        assert payload.max_tool_time_ms == SUBAGENT_MAX_TOOL_TIME_MS
-        assert payload.max_tool_time_ms == 60_000
+        assert payload.max_iterations == cfg.max_iterations
+        assert payload.max_cost_usd == cfg.max_cost_usd
+        assert payload.max_prompt_tokens == cfg.max_prompt_tokens
+        assert payload.max_tool_time_ms == cfg.metadata["max_tool_time_ms"]
+        assert cfg.max_cost_usd is not None and cfg.max_cost_usd < 0.75
+
+
+def test_spawn_rails_follow_the_registered_subagent():
+    """A registry edit is the rail source — spawn must not keep a second copy."""
+    registry = get_agent_registry()
+    original = registry.get(CORE_SUBAGENT_ID)
+    assert original is not None
+    override = original.model_copy(update={"max_iterations": 3, "max_cost_usd": 0.05})
+    registry.register_agent(override)
+    try:
+        motet = _FakeMotet()
+        _run(motet, ["a", "b"])
+        payload = _agent_payloads(motet)[0]
+        assert payload.max_iterations == 3
+        assert payload.max_cost_usd == 0.05
+    finally:
+        registry.register_agent(original)
 
 
 def test_sub_agents_inherit_the_turns_model():
@@ -570,7 +797,7 @@ def test_declared_tools_are_the_childs_catalog():
     """A pin without a cage still lets the child tools_search into the grant."""
     motet = _FakeMotet()
     with patch(
-        "motet.core.tools.builtin.spawn_agents._resolve_child_tool_schemas",
+        "motet.core.tools.builtin.spawn_agents.resolve_child_tool_schemas",
         side_effect=_echo_schemas,
     ):
         _run(
@@ -601,7 +828,7 @@ def test_discover_opt_in_keeps_declared_tools_off_the_cage():
     """discover=true is how we test catalog search without making it the default."""
     motet = _FakeMotet()
     with patch(
-        "motet.core.tools.builtin.spawn_agents._resolve_child_tool_schemas",
+        "motet.core.tools.builtin.spawn_agents.resolve_child_tool_schemas",
         side_effect=_echo_schemas,
     ):
         _run(
@@ -620,10 +847,12 @@ def test_discover_opt_in_keeps_declared_tools_off_the_cage():
     assert discovering.tools is None
     assert "core.tools_search" not in discovering.tool_filter_metadata["exclude_tools"]
     assert "core.web_search" in discovering.tool_filter_metadata["required_tools"]
-    assert _system_contents(discovering) == [SUBAGENT_DISCOVERY_PROMPT]
+    assert _system_contents(discovering) == [
+        _core_subagent().metadata["discovery_system_prompt"]
+    ]
     assert [schema["name"] for schema in caged.tools] == ["core.http_get_browser"]
     assert "core.tools_search" in caged.tool_filter_metadata["exclude_tools"]
-    assert _system_contents(caged) == [SUBAGENT_SYSTEM_PROMPT]
+    assert _system_contents(caged) == [_core_subagent().system_prompt]
 
 
 def test_discover_siblings_share_the_discovery_prompt():
@@ -638,7 +867,7 @@ def test_discover_siblings_share_the_discovery_prompt():
     )
 
     texts = [_system_contents(p)[0] for p in _agent_payloads(motet)]
-    assert texts[0] == texts[1] == SUBAGENT_DISCOVERY_PROMPT
+    assert texts[0] == texts[1] == _core_subagent().metadata["discovery_system_prompt"]
     assert "core.web_search" not in texts[0]
     assert "core.http_get_browser" not in texts[0]
 
@@ -647,7 +876,7 @@ def test_undeclared_sibling_stays_on_discovery():
     """The cage is per task. A sibling that named no tools still has to search."""
     motet = _FakeMotet()
     with patch(
-        "motet.core.tools.builtin.spawn_agents._resolve_child_tool_schemas",
+        "motet.core.tools.builtin.spawn_agents.resolve_child_tool_schemas",
         side_effect=_echo_schemas,
     ):
         _run(

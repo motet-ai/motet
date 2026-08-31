@@ -5,13 +5,14 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-05-04
+Last Modified: 2026-08-31
 
 Description:
     Implements cross-conversation memory recall for the context preparation
     pipeline. The provider derives a query from the latest user message,
     retrieves relevant memories, records observability metadata, and injects
-    memory context before artifact providers run.
+    memory context before artifact providers run. Turns with no user text
+    skip recall (same empty-query rule as artifact RAG).
 
 Dependencies:
     - time for provider timing metrics
@@ -22,8 +23,9 @@ Usage:
     state = MemoryRecallProvider().apply(state, data=data, motet=motet, logger=logger)
 
 Notes:
-    - Hybrid retrieval remains preferred when available.
-    - Fallback behavior matches the previous prepare_context implementation.
+    - Hybrid retrieval runs when the latest user message has non-empty text.
+    - Missing or blank user text sets context_info memory_recall_skipped=empty_query
+      and does not call recall or hybrid_retrieve.
 """
 
 from __future__ import annotations
@@ -33,6 +35,20 @@ from typing import Any
 
 from ...types import Message
 from .types import ContextPipelineState
+
+
+def _user_recall_query(messages: list[Any]) -> str:
+    """Latest user text, stripped. Empty when there is no user message."""
+    last_user = next(
+        (msg for msg in reversed(messages) if getattr(msg, "role", None) == "user"),
+        None,
+    )
+    if last_user is None:
+        return ""
+    content = getattr(last_user, "content", None)
+    if not isinstance(content, str):
+        return ""
+    return content.strip()
 
 
 class MemoryRecallProvider:
@@ -51,12 +67,16 @@ class MemoryRecallProvider:
         if not data.include_memory_recall:
             return state
 
+        query = _user_recall_query(state.messages)
+        if not query:
+            state.context_info["memory_recall_skipped"] = "empty_query"
+            state.context_info.setdefault("memory_items", [])
+            return state
+
         try:
             t0 = time.perf_counter()
-            last_user_msg = next((msg for msg in reversed(state.messages) if msg.role == "user"), None)
-            query = last_user_msg.content if last_user_msg else ""
 
-            if hasattr(motet.memory, "hybrid_retrieve") and query:
+            if hasattr(motet.memory, "hybrid_retrieve"):
                 memory_items = motet.memory.hybrid_retrieve(
                     query=query,
                     limit=5,
@@ -82,7 +102,7 @@ class MemoryRecallProvider:
                 for item in memory_items
             ]
 
-            if hasattr(motet.memory, "apply_vector_recall") and query and memory_items:
+            if hasattr(motet.memory, "apply_vector_recall") and memory_items:
                 state.messages = motet.memory.apply_vector_recall(
                     messages=state.messages,
                     query=query,

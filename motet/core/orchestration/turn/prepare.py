@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Motet Contributors
 Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
 
 Author: Matt Chisholm <matt@motet.dev>
-Last Modified: 2026-08-24
+Last Modified: 2026-08-29
 
 Description:
     Prepare-phase helpers for `agent_turn` (GitHub issue #147 factorization).
@@ -122,6 +122,18 @@ def sanitize_message_attachments(value: Any) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
+def _metadata_without_display_thinking(metadata: Any) -> Dict[str, Any]:
+    """Copy message metadata without conversation-reload display fields."""
+    if not isinstance(metadata, dict):
+        return {}
+    cleaned = dict(metadata)
+    cleaned.pop("thinking_text", None)
+    cleaned.pop("tool_summaries", None)
+    cleaned.pop("cost_usd", None)
+    cleaned.pop("spawn_children", None)
+    return cleaned
+
+
 def to_turn_messages(raw_messages: List[Any]) -> List[Message]:
     """Normalize heterogeneous inbound messages to canonical ``Message`` models."""
     normalized: List[Message] = []
@@ -133,7 +145,7 @@ def to_turn_messages(raw_messages: List[Any]) -> List[Message]:
                     content=msg.content,
                     content_parts=getattr(msg, "content_parts", None),
                     name=getattr(msg, "name", None),
-                    metadata=getattr(msg, "metadata", None) or {},
+                    metadata=_metadata_without_display_thinking(getattr(msg, "metadata", None)),
                     tool_calls_canonical=tool_calls_from_message(msg) or None,
                     tool_call_id=getattr(msg, "tool_call_id", None),
                     attachments=getattr(msg, "attachments", None),
@@ -149,7 +161,7 @@ def to_turn_messages(raw_messages: List[Any]) -> List[Message]:
                     content=str(msg.get("content", "")),
                     content_parts=msg.get("content_parts"),
                     name=msg.get("name"),
-                    metadata=msg.get("metadata") or {},
+                    metadata=_metadata_without_display_thinking(msg.get("metadata")),
                     tool_calls_canonical=tool_calls_from_message(msg) or None,
                     tool_call_id=msg.get("tool_call_id"),
                     attachments=sanitize_message_attachments(msg.get("attachments")),
@@ -164,7 +176,7 @@ def to_turn_messages(raw_messages: List[Any]) -> List[Message]:
                 content=getattr(msg, "content", ""),
                 content_parts=getattr(msg, "content_parts", None),
                 name=getattr(msg, "name", None),
-                metadata=getattr(msg, "metadata", None) or {},
+                metadata=_metadata_without_display_thinking(getattr(msg, "metadata", None)),
                 tool_calls_canonical=tool_calls_from_message(msg) or None,
                 tool_call_id=getattr(msg, "tool_call_id", None),
                 attachments=sanitize_message_attachments(getattr(msg, "attachments", None)),

@@ -5,7 +5,7 @@
  * Licensed under the Functional Source License, Version 1.1, or a commercial license. See LICENSE.
  *
  * Author: Matt Chisholm <matt@motet.dev>
- * Last Modified: 2026-08-25
+ * Last Modified: 2026-08-31
  *
  * Description:
  *     Message composition area with file attachment, RAG context, and model controls.
@@ -14,7 +14,8 @@
  *     1. Model select: single searchable list of ``provider : model`` options
  *        (plus Auto). A key icon marks providers with an API key; models
  *        without a key stay listed but cannot be selected. Enable thinking
- *        and reasoning effort sit to the right.
+ *        and reasoning effort sit to the right. Priced this-turn and
+ *        conversation totals align to the right of the same row.
  *
  *     2. Sender: Text input with send button
  *        - Supports Enter to send, Shift+Enter for new line
@@ -60,6 +61,7 @@
  *       that ``requires_api_key`` and lack a key are listed but disabled.
  *     - Enable thinking sits to the right of the model select. When it is on,
  *       the reasoning-effort select appears to the right of the switch.
+ *       Priced turn and conversation estimates sit to the right of that select.
  */
 import React, { useMemo } from "react";
 import { Button, Flex, message, Popover, Select, Switch, Tag, Tooltip, Typography, Badge, Space } from "antd";
@@ -73,6 +75,7 @@ import {
   treatsThinkingAsAlwaysOn,
   type RagControlsValue,
   type ReasoningEffort,
+  formatCostUsd,
 } from "@motet/ui-common";
 import { randomId } from "../utils";
 import { type DraftUploadItem } from "../types";
@@ -91,8 +94,7 @@ type ModelInfo = {
 
 type ModelSelectOption = {
   value: string;
-  label: React.ReactNode;
-  searchLabel: string;
+  label: string;
   disabled?: boolean;
   title?: string;
 };
@@ -116,6 +118,16 @@ function modelOptionNode(text: string, showKey: boolean): React.ReactNode {
       <span>{text}</span>
     </span>
   );
+}
+
+function modelSelectLabel(value: string, text: string, models: ModelInfo[]): React.ReactNode {
+  if (!value) return text || "Auto";
+  const { provider, name } = decodeModelValue(value);
+  const model = (models || []).find(
+    (m) =>
+      String(m.provider || "").trim() === provider && String(m.name || "").trim() === name,
+  );
+  return modelOptionNode(text, model ? modelCredentialFlags(model).showKey : false);
 }
 
 function encodeModelValue(provider: string, name: string): string {
@@ -196,6 +208,10 @@ interface ChatInputAreaProps {
   reasoningEffort: ReasoningEffort;
   /** Callback when user changes reasoning effort */
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  /** Priced estimate for the current or last turn; omitted when unknown. */
+  turnCostUsd?: number | null;
+  /** Priced conversation rollup; omitted when unknown. */
+  conversationCostUsd?: number | null;
 }
 
 export function ChatInputArea({
@@ -225,6 +241,8 @@ export function ChatInputArea({
   onEnableThinking,
   reasoningEffort,
   onReasoningEffortChange,
+  turnCostUsd = null,
+  conversationCostUsd = null,
 }: ChatInputAreaProps) {
   const ragControlsActive = ragControlsIsCustom(ragControls);
   const retrievalSummary = summarizeRagControls(ragControls);
@@ -251,18 +269,17 @@ export function ChatInputArea({
         const name = String(m.name || "").trim();
         if (!provider || !name) return null;
         const text = modelOptionLabel(provider, name, m.display_name);
-        const { showKey, disabled } = modelCredentialFlags(m);
+        const { disabled } = modelCredentialFlags(m);
         const option: ModelSelectOption = {
           value: encodeModelValue(provider, name),
-          label: modelOptionNode(text, showKey),
-          searchLabel: text,
+          label: text,
           disabled,
           title: disabled ? "No API key configured for this provider" : text,
         };
         return option;
       })
       .filter((item): item is ModelSelectOption => item != null)
-      .sort((a, b) => a.searchLabel.localeCompare(b.searchLabel));
+      .sort((a, b) => a.label.localeCompare(b.label));
     const selectedProvider = String(selectedModelProvider || "").trim();
     const selectedName = String(selectedModelName || "").trim();
     if (selectedProvider && selectedName) {
@@ -272,11 +289,10 @@ export function ChatInputArea({
         items.unshift({
           value: selectedValue,
           label: text,
-          searchLabel: text,
         });
       }
     }
-    return [{ label: "Auto", value: "", searchLabel: "Auto" }, ...items];
+    return [{ label: "Auto", value: "" }, ...items];
   }, [availableModels, selectedModelProvider, selectedModelName]);
 
   const selectedModelValue = useMemo(() => {
@@ -292,6 +308,10 @@ export function ChatInputArea({
   );
   const thinkingEnabled = thinkingAlwaysOn || enableThinking;
   const effortValue: ReasoningEffort = thinkingAlwaysOn ? "max" : reasoningEffort;
+  const costTotals = [
+    { key: "turn", label: "Turn", amount: formatCostUsd(turnCostUsd) },
+    { key: "conversation", label: "Conversation", amount: formatCostUsd(conversationCostUsd) },
+  ].filter((row) => row.amount);
   const effortOptions = thinkingAlwaysOn
     ? [{ value: "max" as const, label: "Max (required)" }]
     : [
@@ -453,7 +473,7 @@ export function ChatInputArea({
               </Popover>
               <Tag
                 className={ragControlsActive ? "retrieval-chip retrieval-chip-active" : "retrieval-chip"}
-                bordered={false}
+                variant="filled"
                 closable={ragControlsActive}
                 onClose={(event) => {
                   event.preventDefault();
@@ -488,52 +508,65 @@ export function ChatInputArea({
         onChange={(value) => setInputValue(value as string)}
         placeholder={disabled ? "Please log in to send messages..." : "Type your message... (Enter to send, Shift+Enter for new line)"}
       />
-      <Flex className="input-model-row" align="center" gap={12} wrap="wrap">
-        <Select
-            className="input-model-select muted-until-hover-select"
-          size="small"
-          showSearch
-          allowClear
-          placeholder="Model (auto)"
-          optionFilterProp="searchLabel"
-          options={modelOptions}
-          value={selectedModelValue}
-          onChange={(value) => {
-            if (!value) {
-              onSelectModel("", "");
-              return;
-            }
-            const chosen = modelOptions.find((item) => item.value === value);
-            if (chosen?.disabled) return;
-            const next = decodeModelValue(String(value));
-            onSelectModel(next.provider, next.name);
-          }}
-        />
-        <Flex className="input-thinking-control" align="center" gap={8}>
-          <Tooltip
-            title={thinkingAlwaysOn ? "Thinking is always on for Kimi K3." : undefined}
-          >
-            <Text className="input-thinking-label" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-              Enable thinking{thinkingAlwaysOn ? " (always on)" : ""}
-            </Text>
-          </Tooltip>
-          <Switch
-            size="small"
-            checked={thinkingEnabled}
-            disabled={thinkingAlwaysOn}
-            onChange={onEnableThinking}
-          />
-        </Flex>
-        {thinkingEnabled && (
+      <Flex className="input-model-row" align="center" justify="space-between" gap={12} wrap="wrap">
+        <Flex align="center" gap={12} wrap="wrap">
           <Select
-                className="input-reasoning-select muted-until-hover-select"
+              className="input-model-select muted-until-hover-select"
             size="small"
-            aria-label="Reasoning effort"
-            value={effortValue}
-            disabled={thinkingAlwaysOn}
-            options={effortOptions}
-            onChange={(v) => onReasoningEffortChange((v as ReasoningEffort) || "medium")}
+            showSearch
+            allowClear
+            placeholder="Model (auto)"
+            optionFilterProp="label"
+            optionRender={(option) => modelSelectLabel(String(option.value ?? ""), String(option.label ?? ""), availableModels)}
+            labelRender={(props) => modelSelectLabel(String(props.value ?? ""), String(props.label ?? ""), availableModels)}
+            options={modelOptions}
+            value={selectedModelValue}
+            onChange={(value) => {
+              if (!value) {
+                onSelectModel("", "");
+                return;
+              }
+              const chosen = modelOptions.find((item) => item.value === value);
+              if (chosen?.disabled) return;
+              const next = decodeModelValue(String(value));
+              onSelectModel(next.provider, next.name);
+            }}
           />
+          <Flex className="input-thinking-control" align="center" gap={8}>
+            <Tooltip
+              title={thinkingAlwaysOn ? "Thinking is always on for Kimi K3." : undefined}
+            >
+              <Text className="input-thinking-label" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                Enable thinking{thinkingAlwaysOn ? " (always on)" : ""}
+              </Text>
+            </Tooltip>
+            <Switch
+              size="small"
+              checked={thinkingEnabled}
+              disabled={thinkingAlwaysOn}
+              onChange={onEnableThinking}
+            />
+          </Flex>
+          {thinkingEnabled && (
+            <Select
+                  className="input-reasoning-select muted-until-hover-select"
+              size="small"
+              aria-label="Reasoning effort"
+              value={effortValue}
+              disabled={thinkingAlwaysOn}
+              options={effortOptions}
+              onChange={(v) => onReasoningEffortChange((v as ReasoningEffort) || "medium")}
+            />
+          )}
+        </Flex>
+        {costTotals.length > 0 && (
+          <Flex className="input-cost-totals" align="center" gap={12} wrap="wrap">
+            {costTotals.map((row) => (
+              <Text key={row.key} type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                {row.label} {row.amount}
+              </Text>
+            ))}
+          </Flex>
         )}
       </Flex>
     </div>
